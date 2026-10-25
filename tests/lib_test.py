@@ -38,7 +38,7 @@ EXTRA = ("item_pid title:T sort_title:T disc_count track_count artwork_cache_id 
          "num_dir_levels_file num_dir_levels_lib integrity:B media_kind date_modified year content_rating content_rating_level is_user_disabled remember_bookmark "
          "start_time_ms stop_time_ms total_time_ms:R total_burn_time_ms bpm relative_volume eq_preset:T genius_id comment:T grouping:T description:T description_long:T "
          "collection_description:T is_ota_purchased is_compilation is_itunes_u is_audible_audio_book copyright:T chosen_by_auto_fill is_temporary_cloud_download "
-         "is_streaming_quality store_bookmark_timestamp store_bookmark_entity_revision is_podcast external_guid:T feed_url:T store_kind:T date_purchased date_released "
+         "is_streaming_quality store_bookmark_timestamp store_bookmark_entity_revision is_podcast external_guid:T feed_url:T store_kind date_purchased date_released "
          "account_id key_versions key_platform_id key_id store_item_id store_artist_id store_composer_id store_genre_id store_playlist_id storefront_id "
          "redownload_action_params:B artwork_url:T store_xid:T store_flavor:T store_saga_id store_matched_status store_redownloaded_status audio_format sample_rate:R duration:R "
          "gapless_heuristic_info gapless_encoding_delay gapless_encoding_drain gapless_last_frame_resynch analysis_inhibit_flags audio_fingerprint "
@@ -60,7 +60,7 @@ def schema_real(weird_index=False):
     s.append(ddl("item", cols(ITEM), "item_pid"))
     s.append(ddl("item_artist", cols("item_artist_pid item_artist:T sort_item_artist:T series_name:T sort_series_name:T grouping_key:B cloud_status representative_item_pid"), "item_artist_pid"))
     s.append(ddl("item_extra", cols(EXTRA), "item_pid"))
-    s.append(ddl("item_search", cols("item_pid search_title:T search_album:T search_artist:T search_composer:T search_album_artist:T"), "item_pid"))
+    s.append(ddl("item_search", cols("item_pid search_title search_album search_artist search_composer search_album_artist"), "item_pid"))
     s.append(ddl("item_stats", cols("item_pid has_been_played date_played play_count_user play_count_recent date_skipped skip_count_user skip_count_recent bookmark_time_ms user_rating hidden is_downloading download_identifier"), "item_pid"))
     s.append(ddl("location_kind", cols("location_kind_id kind:T"), "location_kind_id"))
     s.append(ddl("lyrics", cols("item_pid checksum lyrics:T"), "item_pid"))
@@ -77,6 +77,20 @@ def connect(path):
     db.create_collation("ML3_WEIRD", lambda a, b: (a.lower() > b.lower()) - (a.lower() < b.lower()))
     db.create_function("ml3_rev", 1, lambda x: 7)
     return db
+
+STEP = 22171567396285518
+SECTIONS = {"a": 0, "b": 2, "c": 3, "d": 5, "e": 6, "f": 8, "g": 9, "h": 10, "i": 11, "j": 12, "k": 13, "l": 14, "m": 16, "n": 17, "o": 19, "p": 20,
+            "q": 21, "r": 22, "s": 23, "t": 25, "u": 26, "v": 27, "w": 28, "x": 29, "y": 30, "z": 31}
+
+def gkey(name):
+    out = bytearray()
+    for ch in name.lower():
+        if "a" <= ch <= "z": out.append(0x27 + 2 * (ord(ch) - 97))
+        elif ch == " ": out.append(4)
+        elif ch == "-": out.append(6)
+        elif "0" <= ch <= "9": out.append(8 + int(ch))
+        else: out.append(0x10 + (ord(ch) & 15))
+    return bytes(out)
 
 NAMES = ["Adele", "Beck", "Coldplay", "Dido", "Eminem", "Foo Fighters", "Gorillaz", "Hole", "Interpol", "Jamiroquai"]
 FOLDERS = ["F%02d" % i for i in (0, 1, 2, 4, 6, 8, 10, 11)]
@@ -103,35 +117,47 @@ def build_db(path, variant="full", unix=False, tracks=10):
     for i, f in enumerate(FOLDERS):
         db.execute("INSERT INTO base_location VALUES (?,?)", (BASE_IDS[i], "iTunes_Control/Music/" + f))
     db.execute("INSERT INTO location_kind VALUES (1,'MPEG audio file')")
-    for i in range(26):
-        db.execute("INSERT INTO sort_map VALUES (?,?,?,x'00')", (chr(97 + i), (i + 1) * 10, i + 1))
+    db.execute("INSERT INTO composer (composer_pid,composer,sort_composer,grouping_key) VALUES (777,'','',x'')")
+    # sort_map jak na prawdziwym iPhonie: wiersz dla każdej użytej nazwy, name_order rośnie z alfabetem
+    allnames = set()
+    for n in NAMES[:tracks]:
+        allnames |= {"Song " + n, "Album " + n, n}
+    allnames |= {"Pop"} | {"G%d" % i for i in range(1, tracks)}
+    ordered = sorted(allnames, key=lambda x: x.lower())
+    db.execute("INSERT INTO sort_map VALUES ('',0,0,x'')")
+    for i, nm in enumerate(ordered):
+        db.execute("INSERT INTO sort_map VALUES (?,?,?,?)", (nm, (i + 1) * STEP, SECTIONS[nm[0].lower()], gkey(nm)))
+    db.execute("INSERT INTO sort_map VALUES ('300 dreams', 8214565720323784697, 34, x'00')")
+    so = dict((r[0], (r[1], r[2])) for r in db.execute("SELECT name, name_order, name_section FROM sort_map"))
     base = 1_300_000_000 if unix else 400_000_000
     rev = 100
     if variant != "empty":
         for i, n in enumerate(NAMES[:tracks]):
             pid = 1000 + i
             sec = i + 1
-            db.execute("INSERT INTO item_artist (item_artist_pid,item_artist,sort_item_artist,grouping_key,cloud_status,representative_item_pid) VALUES (?,?,?,?,5,?)",
-                       (2000 + i, n, n.lower(), b"grp-artist-" + n.encode(), pid))
+            gname = "Pop" if i == 0 else "G%d" % i
+            db.execute("INSERT INTO item_artist (item_artist_pid,item_artist,sort_item_artist,series_name,grouping_key,cloud_status,representative_item_pid) VALUES (?,?,?,'',?,5,?)",
+                       (2000 + i, n, n, gkey(n), pid))
             db.execute("INSERT INTO album_artist (album_artist_pid,album_artist,sort_album_artist,grouping_key,artwork_cache_id,representative_item_pid) VALUES (?,?,?,?,77,?)",
-                       (3000 + i, n, n.lower(), b"grp-aa-" + n.encode(), pid))
-            db.execute("INSERT INTO album (album_pid,album,album_artist_pid,representative_item_pid,grouping_key,artwork_cache_id,user_rating,feed_url) VALUES (?,?,?,?,?,77,60,'http://x')",
-                       (4000 + i, "Album " + n, 3000 + i, pid, b"grp-album-" + n.encode()))
+                       (3000 + i, n, n, gkey(n), pid))
+            db.execute("INSERT INTO album (album_pid,album,sort_album,album_artist_pid,representative_item_pid,grouping_key,artwork_cache_id,user_rating,feed_url) VALUES (?,?,?,?,?,?,77,60,'http://x')",
+                       (4000 + i, "Album " + n, "Album " + n, 3000 + i, pid, gkey("Album " + n)))
             db.execute("INSERT INTO genre (genre_id,genre,grouping_key,representative_item_pid) VALUES (?,?,?,?)",
-                       (5000 + i, "Pop" if i == 0 else "G%d" % i, b"grp-genre", pid))
+                       (5000 + i, gname, gkey(gname), pid))
             f = i % len(FOLDERS)
             db.execute("INSERT INTO item (item_pid,media_type,title_order,title_order_section,item_artist_pid,item_artist_order,item_artist_order_section,album_pid,album_order,album_order_section,"
                        "album_artist_pid,album_artist_order,album_artist_order_section,genre_id,genre_order,genre_order_section,track_number,location_kind_id,base_location_id) "
                        "VALUES (?,8,?,?,?,?,?,?,?,?,?,?,?,?,?,?,3,1,?)",
-                       (pid, (i + 1) * 10, sec, 2000 + i, (i + 1) * 10, sec, 4000 + i, (i + 1) * 10, sec, 3000 + i, (i + 1) * 10, sec, 5000 + i, i, 1, BASE_IDS[f]))
+                       (pid, so["Song " + n][0], so["Song " + n][1], 2000 + i, so[n][0], so[n][1], 4000 + i, so["Album " + n][0], so["Album " + n][1],
+                        3000 + i, so[n][0], so[n][1], 5000 + i, so[gname][0], so[gname][1], BASE_IDS[f]))
             ext = "mp3" if i % 3 else "m4a"
             fn = "ABC%s.%s" % (chr(65 + i), ext)
             db.execute("INSERT INTO item_extra (item_pid,title,sort_title,total_time_ms,year,location,file_size,integrity,genius_id,date_modified,date_created,extension,"
-                       "location_type,audio_format,sample_rate,duration,artwork_cache_id,comment,store_item_id,file_type) "
-                       "VALUES (?,?,?,?,?,?,?,x'DEADBEEF',99,?,?,?,1179208773,?,44100.0,200.0,77,'komentarz',555,?)",
-                       (pid, "Song " + n, "song", 200000.0, 2000 + i, fn, 5000000, base, base, 1 if ext == "mp3" else 3,
-                        301 if ext == "mp3" else 502, 1297101601 if ext == "mp3" else 1295270176))
-            db.execute("INSERT INTO item_search VALUES (?,?,?,?,?,?)", (pid, "song " + n.lower(), "album " + n.lower(), n.lower(), "", n.lower()))
+                       "location_type,audio_format,sample_rate,duration,artwork_cache_id,comment,store_item_id,file_type,store_kind,store_flavor,gapless_encoding_delay) "
+                       "VALUES (?,?,?,?,?,?,?,x'DEADBEEF',99,?,?,0,0,?,44100.0,8820000,77,'komentarz',555,0,1,'2:256',528)",
+                       (pid, "Song " + n, "Song " + n, 200000.0, 2000 + i, fn, 5000000, base, base,
+                        301 if ext == "mp3" else 502))
+            db.execute("INSERT INTO item_search VALUES (?,?,?,?,0,?)", (pid, so["Song " + n][0], so["Album " + n][0], so[n][0], so[n][0]))
             db.execute("INSERT INTO item_stats (item_pid,user_rating,play_count_user,has_been_played,date_played,download_identifier) VALUES (?,80,12,1,123456,9)", (pid,))
             db.execute("INSERT INTO purgeable_list VALUES (?,0,?)", (pid, base))
             for cls, key in ((0, pid), (1, 2000 + i), (2, 4000 + i), (3, 3000 + i), (4, 5000 + i)):
@@ -206,7 +232,17 @@ def scenario(name, variant, unix=False, expect_ok=4, tracks=10):
         check(row[0] != 0 and row[1] != 0 and row[2] != 0, "powiązania item: %r" % (row,))
         check(row[3] == 1, "track_number")
         check(row[9] == 8 and row[10] == 1, "media_type/location_kind_id ze wzoru: %r" % (row,))
-        check(row[7] == 260 and row[8] == 26, "kolejność sortowania tytułu: %r" % (row[7:9],))
+        sm = dict((r[0], (r[1], r[2])) for r in db.execute("SELECT name, name_order, name_section FROM sort_map"))
+        tname = "Zażółć gęślą jaźń"
+        check(tname in sm and sm[tname] == (row[7], row[8]), "sort_map nie ma nowego tytułu albo różni się od item: %r vs %r" % (sm.get(tname), row[7:9]))
+        check(row[8] == 31, "sekcja litery Z: %r" % (row[8],))
+        letters = [v[0] for k, v in sm.items() if v[1] < 34 and k != tname]
+        check(row[7] > max(letters), "Z... powinno być po wszystkich istniejących nazwach")
+        nw = sm.get("Nowy Wykonawca")
+        check(nw is not None and nw[1] == 17 and sm["Jamiroquai"][0] < nw[0] < sm["Song Adele"][0], "kolejność wykonawcy w sort_map: %r" % (nw,))
+        check(sm["Jamiroquai"][0] < sm["Song Adele"][0], "sort_map sprawdzian")
+        icomp = db.execute("SELECT composer_pid, composer_order, composer_order_section FROM item WHERE item_pid=?", (r0["pid"],)).fetchone()
+        check(icomp == (0, 0, 0), "brak kompozytora: composer_pid/order = 0: %r" % (icomp,))
         check(db.execute("SELECT item_artist FROM item_artist WHERE item_artist_pid=?", (row[0],)).fetchone() == ("Nowy Wykonawca",), "item_artist")
         check(db.execute("SELECT album FROM album WHERE album_pid=?", (row[1],)).fetchone() == ("Nowy Album",), "album")
         check(db.execute("SELECT genre FROM genre WHERE genre_id=?", (row[2],)).fetchone() == ("Rock",), "genre")
@@ -214,9 +250,9 @@ def scenario(name, variant, unix=False, expect_ok=4, tracks=10):
         check(db.execute("SELECT album_artist_pid FROM album WHERE album_pid=?", (row[1],)).fetchone()[0] == row[6], "album_artist_pid w album")
         # wiersze pomocnicze nie dziedziczą cudzych danych ze wzoru
         a = db.execute("SELECT grouping_key, cloud_status, representative_item_pid, sort_item_artist FROM item_artist WHERE item_artist_pid=?", (row[0],)).fetchone()
-        check(a[0] == b"nowy wykonawca" and a[1] == 0 and a[2] == r0["pid"] and a[3] is None, "item_artist: %r" % (a,))
+        check(a[0] == gkey("Nowy Wykonawca") and a[1] == 0 and a[2] == r0["pid"] and a[3] == "Nowy Wykonawca", "item_artist: %r" % (a,))
         al = db.execute("SELECT artwork_cache_id, user_rating, feed_url, grouping_key FROM album WHERE album_pid=?", (row[1],)).fetchone()
-        check(al[0] == 0 and al[1] == 0 and al[2] is None and al[3].startswith(b"nowy album"), "album: %r" % (al,))
+        check(al[0] == 0 and al[1] == 0 and al[2] is None and al[3] == gkey("Nowy Album"), "album: %r" % (al,))
         check(db.execute("SELECT artwork_cache_id FROM album_artist WHERE album_artist_pid=?", (row[6],)).fetchone() == (0,), "album_artist artwork")
         # drugi utwór używa tych samych wierszy
         row2 = db.execute("SELECT item_artist_pid, album_pid, genre_id FROM item WHERE item_pid=?", (res[1]["pid"],)).fetchone()
@@ -224,22 +260,23 @@ def scenario(name, variant, unix=False, expect_ok=4, tracks=10):
         check(db.execute("SELECT count(*) FROM item_artist WHERE item_artist='Nowy Wykonawca'").fetchone()[0] == 1, "duplikat wykonawcy")
         # item_extra: pola utworu i czyszczenie wzoru
         ex = db.execute("SELECT genius_id, integrity, total_time_ms, year, duration, sample_rate, extension, audio_format, artwork_cache_id, comment, store_item_id, "
-                        "file_type, location_type, file_size, date_created, date_modified, title FROM item_extra WHERE item_pid=?", (r0["pid"],)).fetchone()
+                        "store_kind, store_flavor, file_size, date_created, date_modified, title, sort_title FROM item_extra WHERE item_pid=?", (r0["pid"],)).fetchone()
         check(ex[0] == 0 and ex[1] is None, "wzór nie został wyczyszczony: %r" % (ex,))
         check(ex[2] == 215000 and ex[3] == 2021, "czas/rok: %r" % (ex,))
-        check(abs(ex[4] - 215.0) < 0.01, "duration (sekundy): %r" % (ex[4],))
+        check(ex[4] == 215 * 44100, "duration w próbkach: %r" % (ex[4],))
         check(ex[5] == 44100, "sample_rate")
-        check(ex[6] == 1 and ex[7] == 301, "kody formatu mp3 ze wzoru: %r" % (ex[6:8],))
+        check(ex[7] == 301, "kod formatu mp3 ze wzoru: %r" % (ex[6:8],))
         check(ex[8] == 0 and ex[9] is None and ex[10] == 0, "okładka/komentarz/sklep: %r" % (ex[8:11],))
-        check(ex[11] == 1297101601 and ex[12] == 1179208773, "file_type/location_type ze wzoru")
+        check(ex[11] == 1 and ex[12] == "2:256", "store_kind/store_flavor zostają ze wzoru: %r" % (ex[11:13],))
         check(ex[13] == 4010, "file_size: %r" % (ex[13],))
         if unix: check(ex[14] > 1_700_000_000 and ex[15] > 1_700_000_000, "data unix: %r" % (ex[14:16],))
         else: check(0 < ex[14] < 1_000_000_000 and 0 < ex[15] < 1_000_000_000, "data 2001: %r" % (ex[14:16],))
-        check(ex[16] == "Zażółć gęślą jaźń", "title")
+        check(ex[16] == "Zażółć gęślą jaźń" and ex[17] == ex[16], "title/sort_title")
         ex2 = db.execute("SELECT extension, audio_format, duration FROM item_extra WHERE item_pid=?", (res[2]["pid"],)).fetchone()
-        check(ex2[0] == 3 and ex2[1] == 502 and abs(ex2[2] - 60.0) < 0.01, "kody formatu m4a ze wzoru: %r" % (ex2,))
+        check(ex2[1] == 502 and ex2[2] == 60 * 44100, "kody formatu m4a ze wzoru: %r" % (ex2,))
         srch = db.execute("SELECT search_title, search_album, search_artist, search_composer, search_album_artist FROM item_search WHERE item_pid=?", (r0["pid"],)).fetchone()
-        check(srch == ("zażółć gęślą jaźń", "nowy album", "nowy wykonawca", "", "nowy wykonawca"), "item_search: %r" % (srch,))
+        ords = db.execute("SELECT title_order, album_order, item_artist_order, composer_order, album_artist_order FROM item WHERE item_pid=?", (r0["pid"],)).fetchone()
+        check(srch == ords and srch[0] != 0, "item_search powinno powtarzać liczby sortowania: %r vs %r" % (srch, ords))
         st = db.execute("SELECT user_rating, play_count_user, has_been_played, date_played, download_identifier FROM item_stats WHERE item_pid=?", (r0["pid"],)).fetchone()
         check(st == (0, 0, 0, 0, 0), "item_stats: %r" % (st,))
         pl = db.execute("SELECT is_alarm, date_last_used FROM purgeable_list WHERE item_pid=?", (r0["pid"],)).fetchone()
@@ -306,6 +343,11 @@ def main():
     subprocess.check_call(["gcc", "-g", "-O1", "-Wall", "-Wno-format-truncation", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined",
                            os.path.join(HERE, "lib_cli.c"), os.path.join(HERE, "..", "mi_lib.c"), os.path.join(HERE, "..", "mi_core.c"),
                            "-lsqlite3", "-o", CLI])
+    print("== sortowanie, sekcje, klucze (dane z prawdziwego iPhone'a)")
+    subprocess.check_call(["gcc", "-O1", "-Wno-format-truncation", "-I" + os.path.join(HERE, ".."), os.path.join(HERE, "sort_test.c"),
+                           os.path.join(HERE, "..", "mi_core.c"), "-lsqlite3", "-o", os.path.join(HERE, "sort_test")])
+    p = subprocess.run([os.path.join(HERE, "sort_test")], capture_output=True, text=True)
+    check(p.returncode == 0 and "bad=0" in p.stdout, "sort_test: " + p.stdout)
     scenario("pełny schemat, daty od 2001", "full")
     scenario("daty unix", "full", unix=True)
     scenario("własne porównywanie napisów w indeksie", "collation", expect_ok=4)

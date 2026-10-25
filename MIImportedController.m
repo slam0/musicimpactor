@@ -6,8 +6,18 @@
 #import "MIViews.h"
 #import "MITextController.h"
 
+/* AVAudioPlayer pobieramy w czasie działania (NSClassFromString), tak jak klasy sieciowe */
+@protocol MIPlayerLike <NSObject>
+- (id)initWithContentsOfURL:(id)url error:(NSError **)outError;
+- (BOOL)prepareToPlay;
+- (BOOL)play;
+- (void)stop;
+- (NSTimeInterval)duration;
+@end
+
 @interface MIImportedController ()
 {
+    id _player;
     UITableView *_table;
     UIView *_empty;
     UIView *_busy;
@@ -96,7 +106,42 @@
     return c;
 }
 
-- (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip { [t deselectRowAtIndexPath:ip animated:YES]; }
+- (void)viewWillDisappear:(BOOL)animated
+{
+    [super viewWillDisappear:animated];
+    if (_player) { [_player stop]; _player = nil; }
+}
+
+/* Dotknięcie utworu: odtwarza plik własnym odtwarzaczem aplikacji. Pokazuje, czy winny jest plik, czy baza biblioteki. */
+- (void)tableView:(UITableView *)t didSelectRowAtIndexPath:(NSIndexPath *)ip
+{
+    [t deselectRowAtIndexPath:ip animated:YES];
+    if (_player) { [_player stop]; _player = nil; return; }
+    NSArray *rows = [self rows];
+    if (ip.row >= (NSInteger)[rows count]) return;
+    NSString *rel = [[rows objectAtIndex:(NSUInteger)ip.row] objectForKey:@"rel"];
+    if (![rel length]) return;
+    NSString *path = [@"/var/mobile/Media/iTunes_Control/Music" stringByAppendingPathComponent:rel];
+    NSDictionary *at = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:NULL];
+    if (!at) { MIAlert(GL(@"Test odtwarzania"), [NSString stringWithFormat:GL(@"Nie ma pliku:\n%@"), path]); return; }
+    NSString *info = [NSString stringWithFormat:@"%@\n%@ · %@ · %o", path, MIBytesString([[at objectForKey:@"NSFileSize"] doubleValue]),
+                      [at objectForKey:@"NSFileOwnerAccountName"] ? [at objectForKey:@"NSFileOwnerAccountName"] : @"?",
+                      (unsigned)[[at objectForKey:@"NSFilePosixPermissions"] unsignedIntegerValue]];
+    Class cls = NSClassFromString(@"AVAudioPlayer");
+    if (!cls) { MIAlert(GL(@"Test odtwarzania"), GL(@"Odtwarzacz systemowy nie jest dostępny")); return; }
+    NSError *err = nil;
+    id<MIPlayerLike> p = [cls alloc];
+    p = [p initWithContentsOfURL:MIFileURL(path) error:&err];
+    if (!p) {
+        NSString *why = err ? [NSString stringWithFormat:@"%@ %d", [err domain], (int)[err code]] : @"?";
+        MIAlert(GL(@"Test odtwarzania"), [NSString stringWithFormat:GL(@"Odtwarzacz nie otworzył pliku.\nBłąd: %@\n\n%@"), why, info]);
+        return;
+    }
+    [p prepareToPlay];
+    [p play];
+    _player = p;
+    MIAlert(GL(@"Test odtwarzania"), [NSString stringWithFormat:GL(@"Plik się odtwarza, więc sam plik jest dobry (czas: %d s).\nJeśli Muzyka go nie odtwarza, problem jest w bazie biblioteki.\nDotknij utworu jeszcze raz, żeby zatrzymać."), (int)[p duration]]);
+}
 
 - (void)tableView:(UITableView *)t commitEditingStyle:(UITableViewCellEditingStyle)style forRowAtIndexPath:(NSIndexPath *)ip
 {

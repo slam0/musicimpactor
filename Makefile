@@ -18,7 +18,7 @@ include $(THEOS)/makefiles/common.mk
 APPLICATION_NAME = MusicImpactor
 
 MusicImpactor_FILES = main.m AppDelegate.m MIStore.m MITheme.m MIViews.m MILang.m MICrash.m MILibrary.m MIDownloads.m MIQueueController.m MIEditController.m MIFilesController.m MIImportedController.m MITextController.m MISettingsController.m mi_core.c mi_lib.c mi_libc.c
-MusicImpactor_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore
+MusicImpactor_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore AVFoundation
 MusicImpactor_LIBRARIES = sqlite3
 MusicImpactor_CFLAGS = -fobjc-arc -fno-stack-protector -D_FORTIFY_SOURCE=0 -Wno-deprecated-declarations -Wno-unused-command-line-argument
 

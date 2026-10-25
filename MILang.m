@@ -184,6 +184,12 @@ static const struct { NSString *pl, *en, *ru; } kStrings[] = {
     { @"\n(+ %d innych)", @"\n(+ %d more)", @"\n(+ ещё: %d)" },
     { @"\n\nOtwórz aplikację Muzyka. Jeśli utworów nie widać, uruchom ją ponownie albo użyj \"Zrestartuj (respring)\" w Ustawieniach.", @"\n\nOpen the Music app. If the songs are not visible, restart it or use \"Restart (respring)\" in Settings.", @"\n\nОткройте программу «Музыка». Если песен не видно, перезапустите её или используйте \"Перезапуск (respring)\" в настройках." },
     { @"nie ustawiono", @"not set", @"не задано" },
+    { @"Test odtwarzania", @"Playback test", @"Проверка воспроизведения" },
+    { @"Nie ma pliku:\n%@", @"The file does not exist:\n%@", @"Файла нет:\n%@" },
+    { @"Odtwarzacz systemowy nie jest dostępny", @"The system audio player is not available", @"Системный проигрыватель недоступен" },
+    { @"Plik się odtwarza, więc sam plik jest dobry (czas: %d s).\nJeśli Muzyka go nie odtwarza, problem jest w bazie biblioteki.\nDotknij utworu jeszcze raz, żeby zatrzymać.", @"The file plays, so the file itself is fine (length: %d s).\nIf Music will not play it, the problem is in the library database.\nTap the song again to stop.", @"Файл воспроизводится, значит сам файл исправен (длительность: %d с).\nЕсли Музыка его не играет, проблема в базе медиатеки.\nНажмите на песню ещё раз, чтобы остановить." },
+    { @"Odtwarzacz nie otworzył pliku.\nBłąd: %@\n\n%@", @"The player could not open the file.\nError: %@\n\n%@", @"Проигрыватель не открыл файл.\nОшибка: %@\n\n%@" },
+    { @"Dotknij utworu, żeby sprawdzić, czy plik się odtwarza", @"Tap a song to check that its file plays", @"Нажмите на песню, чтобы проверить, воспроизводится ли файл" },
     { @"Żeby przy następnym otwarciu wczytała bibliotekę od nowa", @"So that it loads the library afresh the next time it opens", @"Чтобы при следующем открытии она заново загрузила медиатеку" },
 };
 

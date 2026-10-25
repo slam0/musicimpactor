@@ -28,7 +28,7 @@ Nie ma pobierania z YouTube ani ze Spotify – to narusza prawa autorskie i regu
 ## Co robi przy zapisie (i jak się zabezpiecza)
 
 Muzyka na iOS 6 trzyma bibliotekę w bazie SQLite `/var/mobile/Media/iTunes_Control/iTunes/MediaLibrary.sqlitedb`, a pliki w `iTunes_Control/Music/F00…F49/ABCD.mp3`.
-Od wersji 1.0.2 zapis jest dopasowany do prawdziwego układu bazy z iPhone'a 4S z iOS 6.1.3 (`item_pid`, `item_artist`, `item_extra`, `item_search`, `item_stats`, `purgeable_list`, `entity_revision`, osobny wiersz `base_location` na każdy folder Fxx), ale nadal jest „adaptacyjny”:
+Od wersji 1.0.2 (poprawki w 1.0.3) zapis jest dopasowany do prawdziwego układu bazy z iPhone'a 4S z iOS 6.1.3 (`item_pid`, `item_artist`, `item_extra`, `item_search`, `item_stats`, `purgeable_list`, `entity_revision`, osobny wiersz `base_location` na każdy folder Fxx), ale nadal jest „adaptacyjny”:
 
 * sprawdza, jakie tabele i kolumny są w bazie, a jako wzór bierze wiersze jednego istniejącego utworu (najlepiej w tym samym formacie) i klonuje je z podmienionymi polami,
 * wykonawcę, album, wykonawcę albumu i gatunek znajduje albo tworzy,
@@ -41,6 +41,8 @@ Prawdziwą bazę z iOS 6 zobaczy dopiero Twój telefon – jeśli coś nie zadzi
 
 Po dodaniu aplikacja zamyka aplikację Muzyka (można wyłączyć w Ustawieniach), żeby wczytała bibliotekę od nowa. Gdy utworów nadal nie widać: Ustawienia → **Zrestartuj (respring)**, a w ostateczności zrestartuj telefon.
 Gdyby coś poszło źle: Ustawienia → **Przywróć kopię biblioteki**.
+
+**Test odtwarzania:** w zakładce Zaimportowane dotknij utworu – aplikacja odtworzy plik własnym odtwarzaczem. Jeśli plik gra, a Muzyka go nie chce, problem jest w bazie biblioteki, a nie w pliku.
 
 ## Formaty
 

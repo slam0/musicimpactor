@@ -405,12 +405,6 @@ static void set_empty(row_t *r, const tbl_t *t, int i)
     else { r->v[i].type = SQLITE_INTEGER; r->v[i].i = 0; }
 }
 
-static void set_null_col(row_t *r, const tbl_t *t, const char *col)
-{
-    int i = col_index(t, col);
-    if (i >= 0) set_empty(r, t, i);
-}
-
 /* Dodaje do wiersza wartości dla kolumn NOT NULL bez wartości domyślnej, których nie ustawiliśmy. */
 static void row_fill_required(row_t *r, const tbl_t *t)
 {
@@ -434,6 +428,8 @@ static const char *const kReset[] = {
 static int reset_name_match(const char *name)
 {
     int k;
+    /* te dwa pola mają w prawdziwej bibliotece każdy zwykły utwór (store_kind=1, store_flavor="2:256") - zostają ze wzoru */
+    if (ieq(name, "store_kind") || ieq(name, "store_flavor")) return 0;
     for (k = 0; kReset[k]; k++) if (icontains(name, kReset[k])) return 1;
     return 0;
 }
@@ -536,33 +532,6 @@ static int is_virtual_table(sqlite3 *db, const char *name)
     }
     sqlite3_finalize(st);
     return v;
-}
-
-/* sortowanie: tabela sort_map (name, name_order, name_section) */
-static int sort_info(sqlite3 *db, const tbl_t *sm, const char *name, long long *order, long long *section)
-{
-    static const char *const queries[] = {
-        "SELECT name_order, name_section FROM sort_map WHERE name = ?1 COLLATE NOCASE LIMIT 1",
-        "SELECT name_order, name_section FROM sort_map WHERE name < ?1 COLLATE NOCASE ORDER BY name COLLATE NOCASE DESC LIMIT 1",
-        "SELECT name_order, name_section FROM sort_map ORDER BY name COLLATE NOCASE ASC LIMIT 1",
-        NULL
-    };
-    int q;
-    if (sm->n == 0 || col_index(sm, "name") < 0 || col_index(sm, "name_order") < 0 || col_index(sm, "name_section") < 0) return 0;
-    for (q = 0; queries[q]; q++) {
-        sqlite3_stmt *st = NULL;
-        int ok = 0;
-        if (sqlite3_prepare_v2(db, queries[q], -1, &st, NULL) != SQLITE_OK) continue;
-        if (q < 2) sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
-        if (sqlite3_step(st) == SQLITE_ROW) {
-            *order = sqlite3_column_int64(st, 0);
-            *section = sqlite3_column_int64(st, 1);
-            ok = 1;
-        }
-        sqlite3_finalize(st);
-        if (ok) return 1;
-    }
-    return 0;
 }
 
 /* ------------------------------------------------------------------ pomocnicze zapisy wartości */
@@ -683,17 +652,209 @@ static int entity_names(const tbl_t *t, const char **keycol, const char **nameco
     return *keycol && *namecol;
 }
 
-/* sortowanie: kolumny <prefix>_order i <prefix>_order_section w wierszu utworu */
-static void set_order(ctx_t *c, row_t *row, const tbl_t *t, const char *prefix, const char *name)
+/* ------------------------------------------------------------------ sortowanie (tabela sort_map) */
+
+/*
+ * Na iPhonie z iOS 6.1.3 tabela sort_map ma po jednym wierszu dla KAŻDEJ użytej nazwy (tytułu, wykonawcy, albumu, gatunku...):
+ *   name_order   - liczba całkowita rosnąca zgodnie z kolejnością alfabetyczną (rzadko rozmieszczone, odstępy rzędu 2e16),
+ *   name_section - numer litery w polskim alfabecie (A=0, Ą=1, B=2, C=3, Ć=4, D=5 ... Z=31, Ź=32, Ż=33), reszta (cyfry, cyrylica) = 34.
+ * Utwór trzyma te liczby w kolumnach *_order, a item_search powtarza je jako liczby do wyszukiwania.
+ * Nowa nazwa dostaje wiersz z liczbą pośrodku między sąsiadami, więc nic innego nie trzeba przenumerowywać.
+ */
+
+/* Jeden "znak" napisu UTF-8: litery polskie sprowadzamy do podstawowych (ą->a), resztę zwracamy bez zmian.
+   Zwracana wartość: 'a'..'z' (małe litery), bajt ASCII, albo 0x100+ dla innych znaków. */
+static int fold_next(const unsigned char **pp)
+{
+    const unsigned char *p = *pp;
+    int ch = *p;
+    if (ch == 0) return 0;
+    if (ch < 0x80) {
+        (*pp)++;
+        if (ch >= 'A' && ch <= 'Z') ch += 32;
+        return ch;
+    }
+    if ((ch == 0xC4 || ch == 0xC5 || ch == 0xC3) && p[1]) {
+        int d = p[1];
+        int r = 0;
+        if (ch == 0xC4) { if (d == 0x85 || d == 0x84) r = 'a'; else if (d == 0x87 || d == 0x86) r = 'c'; else if (d == 0x99 || d == 0x98) r = 'e'; }
+        else if (ch == 0xC5) {
+            if (d == 0x82 || d == 0x81) r = 'l'; else if (d == 0x84 || d == 0x83) r = 'n';
+            else if (d == 0x9B || d == 0x9A) r = 's'; else if (d == 0xBA || d == 0xB9 || d == 0xBC || d == 0xBB) r = 'z';
+        } else if (d == 0xB3 || d == 0x93) r = 'o';
+        if (r) { *pp += 2; return r; }
+    }
+    /* inny znak wielobajtowy: porównujemy po bajtach */
+    (*pp)++;
+    return 0x100 + ch;
+}
+
+static int is_latin_letter(int f) { return f >= 'a' && f <= 'z'; }
+
+static int weight_of(int f)
+{
+    if (f == 0) return 0;
+    if (f == ' ') return 1;
+    if (f >= 'a' && f <= 'z') return 100 + (f - 'a');
+    if (f >= '0' && f <= '9') return 50 + (f - '0');
+    if (f < 0x100) return 10 + (f & 31);
+    return 200 + (f - 0x100);
+}
+
+/* kolejność nazw: najpierw nazwy zaczynające się od litery łacińskiej, potem cała reszta (cyfry, cyrylica...) */
+static int coll_cmp(const char *a, const char *b)
+{
+    const unsigned char *pa = (const unsigned char *)a, *pb = (const unsigned char *)b;
+    const unsigned char *qa = pa, *qb = pb;
+    int la = is_latin_letter(fold_next(&qa)), lb = is_latin_letter(fold_next(&qb));
+    if (la != lb) return la ? -1 : 1;
+    if (!la) return strcmp(a, b) < 0 ? -1 : (strcmp(a, b) > 0 ? 1 : 0);
+    for (;;) {
+        int fa = fold_next(&pa), fb = fold_next(&pb);
+        int wa = weight_of(fa), wb = weight_of(fb);
+        if (wa != wb) return wa < wb ? -1 : 1;
+        if (fa == 0) break;
+    }
+    {
+        int r = strcmp(a, b);   /* różnią się tylko wielkością liter / ogonkami */
+        return r < 0 ? -1 : (r > 0 ? 1 : 0);
+    }
+}
+
+/* numer sekcji (litery polskiego alfabetu bez "ó", które sortuje się razem z "o") */
+static int name_section_of(const char *name)
+{
+    const unsigned char *p = (const unsigned char *)name;
+    int f, idx = 0;
+    unsigned char c0 = p[0], c1 = p[1];
+    if (c0 == 0xC4 || c0 == 0xC5) {
+        /* litery z ogonkami mają własne sekcje */
+        if (c0 == 0xC4 && (c1 == 0x84 || c1 == 0x85)) return 1;     /* ą */
+        if (c0 == 0xC4 && (c1 == 0x86 || c1 == 0x87)) return 4;     /* ć */
+        if (c0 == 0xC4 && (c1 == 0x98 || c1 == 0x99)) return 7;     /* ę */
+        if (c0 == 0xC5 && (c1 == 0x81 || c1 == 0x82)) return 15;    /* ł */
+        if (c0 == 0xC5 && (c1 == 0x83 || c1 == 0x84)) return 18;    /* ń */
+        if (c0 == 0xC5 && (c1 == 0x9A || c1 == 0x9B)) return 24;    /* ś */
+        if (c0 == 0xC5 && (c1 == 0xB9 || c1 == 0xBA)) return 32;    /* ź */
+        if (c0 == 0xC5 && (c1 == 0xBB || c1 == 0xBC)) return 33;    /* ż */
+    }
+    f = fold_next(&p);
+    if (!is_latin_letter(f)) return 34;
+    /* a0 ą1 b2 c3 ć4 d5 e6 ę7 f8 g9 h10 i11 j12 k13 l14 ł15 m16 n17 ń18 o19 p20 q21 r22 s23 ś24 t25 u26 v27 w28 x29 y30 z31 ź32 ż33 */
+    switch (f) {
+        case 'a': idx = 0; break;
+        case 'b': idx = 2; break;
+        case 'c': idx = 3; break;
+        case 'd': idx = 5; break;
+        case 'e': idx = 6; break;
+        case 'f': idx = 8; break;
+        case 'g': idx = 9; break;
+        case 'h': idx = 10; break;
+        case 'i': idx = 11; break;
+        case 'j': idx = 12; break;
+        case 'k': idx = 13; break;
+        case 'l': idx = 14; break;
+        case 'm': idx = 16; break;
+        case 'n': idx = 17; break;
+        case 'o': idx = 19; break;
+        default: idx = 20 + (f - 'p'); if (f > 's') idx++; break;
+    }
+    /* p..s: 20..23, t..z: 25..31 (po "ś"=24) */
+    return idx;
+}
+
+/* Klucz grupujący (grouping_key) w stylu iOS: bajt na znak, litera = 0x27 + 2*(numer litery), spacja = 0x04 */
+static int make_group_key(const char *name, unsigned char *out, int cap)
+{
+    const unsigned char *p = (const unsigned char *)name;
+    int n = 0;
+    while (*p && n < cap) {
+        int f = fold_next(&p), b;
+        if (f >= 'a' && f <= 'z') b = 0x27 + 2 * (f - 'a');
+        else if (f == ' ') b = 0x04;
+        else if (f == '-') b = 0x06;
+        else if (f >= '0' && f <= '9') b = 0x08 + (f - '0');
+        else b = 0x10 + (f & 0x0F);
+        out[n++] = (unsigned char)b;
+    }
+    return n;
+}
+
+/* Znajduje albo dodaje nazwę w sort_map. Zwraca 1 i ustawia order/section (0, 0 dla pustej nazwy). */
+static int sort_ensure(ctx_t *c, const char *name, long long *order, long long *section)
+{
+    sqlite3_stmt *st = NULL;
+    long long lo = 0, hi = 0x7FFFFFFFFFFFFFFFLL;
+    int found = 0, attempt;
+    *order = 0; *section = 0;
+    if (!name || !name[0]) return 1;
+    if (c->sortmap.n == 0 || col_index(&c->sortmap, "name") < 0 || col_index(&c->sortmap, "name_order") < 0 || col_index(&c->sortmap, "name_section") < 0)
+        return 0;
+    for (attempt = 0; attempt < 4; attempt++) {
+        int rc;
+        found = 0; lo = 0; hi = 0x7FFFFFFFFFFFFFFFLL;
+        if (sqlite3_prepare_v2(c->db, "SELECT name, name_order, name_section FROM sort_map", -1, &st, NULL) != SQLITE_OK) return 0;
+        while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+            const char *nm = (const char *)sqlite3_column_text(st, 0);
+            long long o = sqlite3_column_int64(st, 1);
+            int cmp;
+            if (!nm || !nm[0]) continue;
+            if (strcmp(nm, name) == 0) { *order = o; *section = sqlite3_column_int64(st, 2); found = 1; break; }
+            cmp = coll_cmp(nm, name);
+            if (cmp < 0) { if (o >= lo) lo = o; }
+            else if (cmp > 0) { if (o < hi) hi = o; }
+        }
+        if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+            char msg[200];
+            scopy(msg, sizeof msg, sqlite3_errmsg(c->db));
+            sqlite3_finalize(st); st = NULL;
+            if (fix_missing(c->db, msg, c->r)) continue;
+            return 0;
+        }
+        sqlite3_finalize(st); st = NULL;
+        break;
+    }
+    if (found) return 1;
+    {
+        long long mid;
+        row_t row;
+        unsigned char key[300];
+        int kn, tries;
+        char errmsg[200];
+        if (hi - lo <= 1) { *order = lo; *section = name_section_of(name); rep(c->r, "  (sort_map: brak miejsca na nową nazwę \"%s\" - używam sąsiedniej)\n", name); return 1; }
+        mid = (lo >> 1) + (hi >> 1) + (lo & hi & 1);
+        *order = mid;
+        *section = name_section_of(name);
+        row_init(&row);
+        set_text(&row, &c->sortmap, "name", name);
+        set_int(&row, &c->sortmap, "name_order", mid);
+        set_int(&row, &c->sortmap, "name_section", *section);
+        kn = make_group_key(name, key, (int)sizeof key);
+        if (col_index(&c->sortmap, "sort_key") >= 0) set_bytes(&row, &c->sortmap, "sort_key", key, kn);
+        row_fill_required(&row, &c->sortmap);
+        for (tries = 0; tries < 4; tries++) {
+            if (row_insert(c->db, &c->sortmap, &row, c->r, errmsg, sizeof errmsg)) break;
+            if (!fix_missing(c->db, errmsg, c->r)) { rep(c->r, "  uwaga: sort_map: %s\n", errmsg); *order = lo; break; }
+        }
+        row_free(&row);
+        rep(c->r, "  sort_map: dodano \"%s\" (sekcja %lld)\n", name, *section);
+    }
+    return 1;
+}
+
+/* sortowanie: kolumny <prefix>_order i <prefix>_order_section w wierszu utworu; zwraca liczbę order */
+static long long set_order(ctx_t *c, row_t *row, const tbl_t *t, const char *prefix, const char *name)
 {
     char c1[64], c2[64];
     long long o = 0, s = 0;
     snprintf(c1, sizeof c1, "%s_order", prefix);
     snprintf(c2, sizeof c2, "%s_order_section", prefix);
-    if (col_index(t, c1) < 0) return;
-    if (!sort_info(c->db, &c->sortmap, name ? name : "", &o, &s)) { o = 0; s = 0; }
-    set_int(row, t, c1, o);
-    set_int(row, t, c2, s);
+    if (!sort_ensure(c, name, &o, &s)) { o = 0; s = 0; }
+    if (col_index(t, c1) >= 0) {
+        set_int(row, t, c1, o);
+        set_int(row, t, c2, s);
+    }
+    return o;
 }
 
 /* ------------------------------------------------------------------ dziennik zmian (entity_revision) */
@@ -706,7 +867,7 @@ static void rev_add(ctx_t *c, long long entity_pid, const char *sample_table, co
     quote_ident(qt, sizeof qt, sample_table);
     quote_ident(qk, sizeof qk, sample_key);
     snprintf(q, sizeof q,
-             "SELECT class, revision_type FROM entity_revision WHERE entity_pid IN (SELECT %s FROM %s) ORDER BY revision DESC LIMIT 1", qk, qt);
+             "SELECT class, revision_type FROM entity_revision WHERE deleted = 0 AND revision_type = 0 AND entity_pid IN (SELECT %s FROM %s) ORDER BY revision DESC LIMIT 1", qk, qt);
     if (sqlite3_prepare_v2(c->db, q, -1, &st, NULL) != SQLITE_OK) return;
     if (sqlite3_step(st) == SQLITE_ROW) {
         if (sqlite3_prepare_v2(c->db, "INSERT INTO entity_revision (revision, entity_pid, deleted, class, revision_type) VALUES (?1, ?2, 0, ?3, ?4)",
@@ -790,17 +951,22 @@ static long long ensure_entity(ctx_t *c, int which, const char *name, long long 
     if (!key) { row_free(&row); return 0; }
     set_int(&row, &t, keycol, key);
     set_text(&row, &t, namecol, name);
+    /* nazwa do sortowania: w prawdziwej bazie to ta sama nazwa (sort_item_artist = item_artist); sort_series_name zostaje puste */
     for (i = 0; i < t.n; i++) {
-        if (icontains(t.c[i].name, "sort_") && t.c[i].is_text) set_empty(&row, &t, i);
+        if (icontains(t.c[i].name, "sort_") && t.c[i].is_text) {
+            char want[100];
+            snprintf(want, sizeof want, "sort_%s", namecol);
+            if (ieq(t.c[i].name, want)) set_text(&row, &t, t.c[i].name, name);
+            else set_empty(&row, &t, i);
+        }
     }
     /* klucz grupujący: musi być inny dla każdej nazwy (we wzorze jest cudzy) */
     if (col_index(&t, "grouping_key") >= 0) {
-        char g[300], low[220];
-        lower_ascii(low, sizeof low, name);
-        if (is_album) snprintf(g, sizeof g, "%s\x01%lld", low, album_artist_key);
-        else snprintf(g, sizeof g, "%s", low);
-        if (gk_blob) set_bytes(&row, &t, "grouping_key", g, (int)strlen(g));
-        else set_text(&row, &t, "grouping_key", g);
+        unsigned char g[300];
+        int gn = make_group_key(name, g, (int)sizeof g - 1);
+        g[gn] = 0;
+        if (gk_blob) set_bytes(&row, &t, "grouping_key", g, gn);
+        else set_text(&row, &t, "grouping_key", (const char *)g);
     }
     if (is_album) set_int(&row, &t, "album_artist_pid", album_artist_key);
     set_int(&row, &t, "representative_item_pid", new_item_pid);
@@ -961,16 +1127,15 @@ static void detect_dates(ctx_t *c, time_t now)
 
 /* ------------------------------------------------------------------ item_search */
 
-static int add_search(ctx_t *c, long long pid, const char *title, const char *artist, const char *album,
-                      const char *albumartist, mi_lib_result *res)
+/* Na iOS 6.1.3 kolumny search_* to liczby: te same, które utwór ma w title_order, album_order, item_artist_order,
+   composer_order i album_artist_order. W starszych/innych układach mogą być tekstem - wtedy wpisujemy nazwy. */
+static int add_search(ctx_t *c, long long pid, const long long ord[5], const char *const names[5], mi_lib_result *res)
 {
     static const char *const cols[5] = { "search_title", "search_album", "search_artist", "search_composer", "search_album_artist" };
     tbl_t t;
     row_t tp, nr;
     int have = 0, k, lower = 0, seen_letter = 0, seen_upper = 0;
     char errmsg[200], low[600];
-    const char *vals[5];
-    vals[0] = title; vals[1] = album; vals[2] = artist; vals[3] = ""; vals[4] = albumartist;
     if (!table_exists(c->db, "item_search") || is_virtual_table(c->db, "item_search")) return 1;
     if (!tbl_load(c->db, "item_search", &t) || col_index(&t, "item_pid") < 0) return 1;
     row_init(&tp); row_init(&nr);
@@ -990,11 +1155,12 @@ static int add_search(ctx_t *c, long long pid, const char *title, const char *ar
         int i = col_index(&t, cols[k]);
         int text_mode;
         if (i < 0) continue;
-        text_mode = have ? (tp.v[i].type == SQLITE_TEXT || (tp.v[i].type == SQLITE_NULL && t.c[i].is_text)) : t.c[i].is_text;
+        text_mode = have ? (tp.v[i].type == SQLITE_TEXT) : t.c[i].is_text;
         if (text_mode) {
-            if (lower) { lower_ascii(low, sizeof low, vals[k] ? vals[k] : ""); set_text(&nr, &t, cols[k], low); }
-            else set_text(&nr, &t, cols[k], vals[k] ? vals[k] : "");
-        } else set_int(&nr, &t, cols[k], 0);
+            const char *nm = names[k] ? names[k] : "";
+            if (lower) { lower_ascii(low, sizeof low, nm); set_text(&nr, &t, cols[k], low); }
+            else set_text(&nr, &t, cols[k], nm);
+        } else set_int(&nr, &t, cols[k], ord[k]);
     }
     row_fill_required(&nr, &t);
     if (!row_insert(c->db, &t, &nr, c->r, errmsg, sizeof errmsg)) {
@@ -1007,6 +1173,16 @@ static int add_search(ctx_t *c, long long pid, const char *title, const char *ar
     return 1;
 }
 
+/* czas w milisekundach -> liczba próbek (bez dzielenia 64-bitowego): sekundy * częstotliwość + reszta */
+static long long ms_to_samples(long ms, int rate)
+{
+    unsigned secs, rem, r = (unsigned)(rate > 0 ? rate : 44100);
+    if (ms <= 0) return 0;
+    secs = (unsigned)ms / 1000u;
+    rem = (unsigned)ms - secs * 1000u;
+    return (long long)secs * (long long)r + (long long)((rem * r) / 1000u);
+}
+
 /* ------------------------------------------------------------------ jeden utwór */
 
 static int import_one(ctx_t *c, const mi_lib_track *tr, mi_lib_result *res)
@@ -1014,6 +1190,7 @@ static int import_one(ctx_t *c, const mi_lib_track *tr, mi_lib_result *res)
     char rel[24], fname[16], full[1100], ext[8], errmsg[200];
     long long pid = 0, k_artist = 0, k_alb_artist = 0, k_album = 0, k_genre = 0, k_composer = 0, base_id = 0;
     row_t it, ex;
+    long long ord[5] = { 0, 0, 0, 0, 0 };
     int ok = 0, tries, copied = 0, have_ex = 0, bi = -1, k;
     const char *albumartist, *title;
 
@@ -1083,8 +1260,7 @@ static int import_one(ctx_t *c, const mi_lib_track *tr, mi_lib_result *res)
     if (k_album < 0) { scopy(res->error, sizeof res->error, "nie udało się dodać albumu"); goto fail_sp; }
     k_genre = ensure_entity(c, 3, tr->genre, 0, pid, res);
     if (k_genre < 0) { scopy(res->error, sizeof res->error, "nie udało się dodać gatunku"); goto fail_sp; }
-    k_composer = ensure_entity(c, 4, "", 0, pid, res);   /* tylko istniejący pusty wiersz, jeśli jest */
-    if (k_composer < 0) k_composer = 0;
+    k_composer = 0;                                       /* utwory bez kompozytora mają w bazie composer_pid = 0 */
 
     /* --- item --- */
     if (c->have_tpl_item) {
@@ -1106,12 +1282,12 @@ static int import_one(ctx_t *c, const mi_lib_track *tr, mi_lib_result *res)
     set_int(&it, &c->item, "date_added", c->now_db);
     set_int(&it, &c->item, "date_downloaded", c->now_db);
     if (!c->have_tpl_item) set_int(&it, &c->item, "media_type", 8);
-    set_order(c, &it, &c->item, "title", title);
-    set_order(c, &it, &c->item, "item_artist", tr->artist);
-    set_order(c, &it, &c->item, "album", tr->album);
-    set_order(c, &it, &c->item, "album_artist", albumartist ? albumartist : tr->artist);
+    ord[0] = set_order(c, &it, &c->item, "title", title);
+    ord[2] = set_order(c, &it, &c->item, "item_artist", tr->artist);
+    ord[1] = set_order(c, &it, &c->item, "album", tr->album);
+    ord[4] = set_order(c, &it, &c->item, "album_artist", albumartist ? albumartist : tr->artist);
     set_order(c, &it, &c->item, "genre", tr->genre);
-    set_order(c, &it, &c->item, "composer", "");
+    ord[3] = set_order(c, &it, &c->item, "composer", "");
     if (!c->have_tpl_item) row_fill_required(&it, &c->item);
     for (tries = 0; tries < 4; tries++) {
         if (row_insert(c->db, &c->item, &it, c->r, errmsg, sizeof errmsg)) break;
@@ -1128,40 +1304,26 @@ static int import_one(ctx_t *c, const mi_lib_track *tr, mi_lib_result *res)
         i_total = col_index(&c->extra, "total_time_ms");
         i_dur = col_index(&c->extra, "duration");
         i_sr = col_index(&c->extra, "sample_rate");
-        /* jednostki czasu i częstotliwości odczytujemy ze wzoru, zanim go wyczyścimy */
+        /* typy liczb odczytujemy ze wzoru, zanim go wyczyścimy */
         {
-            long long tpl_total = (have_ex && i_total >= 0) ? val_ll(&ex.v[i_total]) : 0;
-            long long tpl_dur = (have_ex && i_dur >= 0) ? val_ll(&ex.v[i_dur]) : 0;
             long long tpl_sr = (have_ex && i_sr >= 0) ? val_ll(&ex.v[i_sr]) : 0;
-            int dur_real = have_ex && i_dur >= 0 && ex.v[i_dur].type == SQLITE_FLOAT;
-            int total_real = have_ex && i_total >= 0 && ex.v[i_total].type == SQLITE_FLOAT;
-            int dur_seconds = (tpl_total > 0 && tpl_dur > 0 && tpl_dur * 100 < tpl_total);
+            int sr_real = (have_ex && i_sr >= 0 && ex.v[i_sr].type == SQLITE_FLOAT) || (i_sr >= 0 && icontains(c->extra.c[i_sr].type, "REAL"));
+            int total_real = (have_ex && i_total >= 0 && ex.v[i_total].type == SQLITE_FLOAT) || (i_total >= 0 && icontains(c->extra.c[i_total].type, "REAL"));
+            int rate = tr->sample_rate > 0 ? tr->sample_rate : 44100;
             if (have_ex) row_reset_foreign(&ex, &c->extra, NULL);
             set_int(&ex, &c->extra, "item_pid", pid);
             set_text(&ex, &c->extra, "title", title);
-            set_null_col(&ex, &c->extra, "sort_title");
+            set_text(&ex, &c->extra, "sort_title", title);
             set_int(&ex, &c->extra, "disc_count", tr->disc_total);
             set_int(&ex, &c->extra, "track_count", tr->track_total);
             if (total_real) set_real(&ex, &c->extra, "total_time_ms", (double)tr->duration_ms);
             else set_int(&ex, &c->extra, "total_time_ms", tr->duration_ms);
-            if (i_dur >= 0) {
-                if (dur_seconds) {
-                    if (dur_real) set_real(&ex, &c->extra, "duration", (double)tr->duration_ms / 1000.0);
-                    else set_int(&ex, &c->extra, "duration", (tr->duration_ms + 500) / 1000);
-                } else {
-                    if (dur_real) set_real(&ex, &c->extra, "duration", (double)tr->duration_ms);
-                    else set_int(&ex, &c->extra, "duration", tr->duration_ms);
-                }
-            }
-            if (i_sr >= 0 && tr->sample_rate > 0) {
-                if (tpl_sr > 0 && tpl_sr <= 200000) {
-                    if (ex.v[i_sr].type == SQLITE_FLOAT) set_real(&ex, &c->extra, "sample_rate", (double)tr->sample_rate);
-                    else set_int(&ex, &c->extra, "sample_rate", tr->sample_rate);
-                } else if (tpl_sr > 200000 && (tpl_sr & 0xFFFFLL) == 0) {
-                    set_int(&ex, &c->extra, "sample_rate", ((long long)tr->sample_rate) << 16);
-                } else if (!have_ex) {
-                    set_int(&ex, &c->extra, "sample_rate", tr->sample_rate);
-                }
+            /* duration = długość w PRÓBKACH (np. 188616 ms przy 48 kHz = 9053662), a nie w milisekundach */
+            if (i_dur >= 0) set_int(&ex, &c->extra, "duration", ms_to_samples(tr->duration_ms, rate));
+            if (i_sr >= 0) {
+                if (tpl_sr > 200000 && (tpl_sr & 0xFFFFLL) == 0) set_int(&ex, &c->extra, "sample_rate", ((long long)rate) << 16);
+                else if (sr_real) set_real(&ex, &c->extra, "sample_rate", (double)rate);
+                else set_int(&ex, &c->extra, "sample_rate", rate);
             }
         }
         set_int(&ex, &c->extra, "year", tr->year);
@@ -1182,7 +1344,11 @@ static int import_one(ctx_t *c, const mi_lib_track *tr, mi_lib_result *res)
     } else rep(c->r, "  (brak tabeli item_extra z kolumną item_pid)\n");
 
     /* --- item_search --- */
-    if (!add_search(c, pid, title, tr->artist, tr->album, albumartist ? albumartist : tr->artist, res)) goto fail_sp;
+    {
+        const char *snames[5];
+        snames[0] = title; snames[1] = tr->album; snames[2] = tr->artist; snames[3] = ""; snames[4] = albumartist ? albumartist : tr->artist;
+        if (!add_search(c, pid, ord, snames, res)) goto fail_sp;
+    }
 
     /* --- pozostałe tabele "per utwór" (item_stats, purgeable_list...) --- */
     for (k = 0; k < c->nptab; k++) {
