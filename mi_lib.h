@@ -1,7 +1,8 @@
 /*
  * Music Impactor - zapis utworów do biblioteki aplikacji Muzyka (iOS 6) w czystym C + SQLite.
  *
- * Schematu bazy MediaLibrary.sqlitedb nie znamy na pewno, dlatego kod jest "adaptacyjny":
+ * Układ bazy MediaLibrary.sqlitedb z iOS 6.1.3 (item_pid, item_artist, item_extra, item_search, base_location na folder Fxx...)
+ * znamy z raportu z prawdziwego iPhone'a 4S, ale kod i tak jest "adaptacyjny":
  *  - czyta, jakie tabele i kolumny w bazie naprawdę są (PRAGMA table_info),
  *  - jako wzór bierze wiersze jednego istniejącego utworu i klonuje je z podmienionymi polami,
  *  - przed zapisem robi kopię bazy, pracuje w jednej transakcji (na błąd: wycofanie) i sprawdza spójność,

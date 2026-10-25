@@ -12,49 +12,65 @@ def check(cond, msg):
         errors += 1
         print("  BŁĄD:", msg)
 
-SCHEMA_FULL = """
-CREATE TABLE item (pid INTEGER PRIMARY KEY, revision_level INTEGER NOT NULL DEFAULT 0, media_type INTEGER NOT NULL DEFAULT 8,
-  title_order INTEGER NOT NULL DEFAULT 0, title_order_section INTEGER NOT NULL DEFAULT 0,
-  item_artist_pid INTEGER NOT NULL DEFAULT 0, item_artist_order INTEGER NOT NULL DEFAULT 0, item_artist_order_section INTEGER NOT NULL DEFAULT 0,
-  album_pid INTEGER NOT NULL DEFAULT 0, album_order INTEGER NOT NULL DEFAULT 0, album_order_section INTEGER NOT NULL DEFAULT 0,
-  album_artist_pid INTEGER NOT NULL DEFAULT 0, album_artist_order INTEGER NOT NULL DEFAULT 0, album_artist_order_section INTEGER NOT NULL DEFAULT 0,
-  composer_pid INTEGER NOT NULL DEFAULT 0, composer_order INTEGER NOT NULL DEFAULT 0, composer_order_section INTEGER NOT NULL DEFAULT 0,
-  genre_id INTEGER NOT NULL DEFAULT 0, genre_order INTEGER NOT NULL DEFAULT 0, genre_order_section INTEGER NOT NULL DEFAULT 0,
-  disc_number INTEGER NOT NULL DEFAULT 0, track_number INTEGER NOT NULL DEFAULT 0, base_location_id INTEGER NOT NULL DEFAULT 0,
-  remote_location_id INTEGER NOT NULL DEFAULT 0, exclude_from_shuffle INTEGER NOT NULL DEFAULT 0, keep_local INTEGER NOT NULL DEFAULT 0,
-  in_my_library INTEGER NOT NULL DEFAULT 1, is_compilation INTEGER NOT NULL DEFAULT 0, date_added INTEGER NOT NULL DEFAULT 0,
-  date_downloaded INTEGER NOT NULL DEFAULT 0, download_source_container_pid INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE item_extra (item_pid INTEGER PRIMARY KEY, title TEXT, sort_title TEXT, disc_count INTEGER NOT NULL DEFAULT 0,
-  track_count INTEGER NOT NULL DEFAULT 0, total_time_ms REAL NOT NULL DEFAULT 0, year INTEGER NOT NULL DEFAULT 0, location TEXT NOT NULL DEFAULT '',
-  file_size INTEGER NOT NULL DEFAULT 0, integrity BLOB, is_audible_audio_book INTEGER NOT NULL DEFAULT 0, date_modified INTEGER NOT NULL DEFAULT 0,
-  media_kind INTEGER NOT NULL DEFAULT 1, content_rating INTEGER NOT NULL DEFAULT 0, is_user_disabled INTEGER NOT NULL DEFAULT 0,
-  bpm INTEGER NOT NULL DEFAULT 0, genius_id INTEGER NOT NULL DEFAULT 0, comment TEXT, grouping TEXT, description TEXT, pending_delete INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE item_playback (item_pid INTEGER PRIMARY KEY, audio_format INTEGER NOT NULL DEFAULT 0, bit_rate INTEGER NOT NULL DEFAULT 0,
-  codec_type INTEGER NOT NULL DEFAULT 0, codec_subtype INTEGER NOT NULL DEFAULT 0, data_kind INTEGER NOT NULL DEFAULT 0, data_url TEXT,
-  duration INTEGER NOT NULL DEFAULT 0, eq_preset TEXT, format INTEGER NOT NULL DEFAULT 0, has_video INTEGER NOT NULL DEFAULT 0,
-  relative_volume INTEGER, sample_rate REAL NOT NULL DEFAULT 0, start_time_ms REAL NOT NULL DEFAULT 0, stop_time_ms REAL NOT NULL DEFAULT 0,
-  volume_normalization_energy INTEGER NOT NULL DEFAULT 0, gapless_heuristic_info INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE item_stats (item_pid INTEGER PRIMARY KEY, user_rating INTEGER NOT NULL DEFAULT 0, needs_restore INTEGER NOT NULL DEFAULT 0,
-  play_count_user INTEGER NOT NULL DEFAULT 0, play_count_recent INTEGER NOT NULL DEFAULT 0, has_been_played INTEGER NOT NULL DEFAULT 0,
-  date_played INTEGER NOT NULL DEFAULT 0, skip_count_user INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE item_store (item_pid INTEGER PRIMARY KEY, store_item_id INTEGER NOT NULL, store_saga_id INTEGER NOT NULL DEFAULT 0, purchase_history_id INTEGER);
-CREATE TABLE item_video (item_pid INTEGER PRIMARY KEY, video_quality INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE artist (pid INTEGER PRIMARY KEY, name TEXT NOT NULL, name_order INTEGER NOT NULL DEFAULT 0, name_order_section INTEGER NOT NULL DEFAULT 0,
-  sort_name TEXT, representative_item_pid INTEGER NOT NULL DEFAULT 0, keep_local INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE album_artist (pid INTEGER PRIMARY KEY, name TEXT NOT NULL, name_order INTEGER NOT NULL DEFAULT 0, name_order_section INTEGER NOT NULL DEFAULT 0,
-  sort_name TEXT, representative_item_pid INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE album (pid INTEGER PRIMARY KEY, name TEXT NOT NULL, name_order INTEGER NOT NULL DEFAULT 0, name_order_section INTEGER NOT NULL DEFAULT 0,
-  sort_name TEXT, album_artist_pid INTEGER NOT NULL DEFAULT 0, representative_item_pid INTEGER NOT NULL DEFAULT 0, feed_url TEXT);
-CREATE TABLE genre (genre_id INTEGER PRIMARY KEY, genre TEXT NOT NULL, name_order INTEGER NOT NULL DEFAULT 0, name_order_section INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE composer (pid INTEGER PRIMARY KEY, name TEXT NOT NULL, name_order INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE base_location (base_location_id INTEGER PRIMARY KEY, path TEXT);
-CREATE TABLE sort_map (name TEXT NOT NULL, name_order INTEGER NOT NULL, name_section INTEGER NOT NULL, sort_key BLOB);
-CREATE TABLE container (pid INTEGER PRIMARY KEY, name TEXT);
-CREATE TABLE container_item (pid INTEGER PRIMARY KEY, container_pid INTEGER, item_pid INTEGER, position INTEGER);
-CREATE TABLE lyrics (item_pid INTEGER PRIMARY KEY, lyrics TEXT);
-CREATE INDEX idx_item_album ON item (album_pid);
-CREATE INDEX idx_artist_name ON artist (name COLLATE NOCASE);
-"""
+def ddl(table, cols, pk):
+    parts = []
+    for name, typ in cols:
+        if name == pk: parts.append("%s INTEGER PRIMARY KEY" % name)
+        elif typ == "I": parts.append("%s INTEGER NOT NULL DEFAULT 0" % name)
+        elif typ == "i": parts.append("%s INTEGER" % name)
+        elif typ == "R": parts.append("%s REAL NOT NULL DEFAULT 0" % name)
+        elif typ == "T": parts.append("%s TEXT" % name)
+        elif typ == "B": parts.append("%s BLOB" % name)
+        else: raise Exception(typ)
+    return "CREATE TABLE %s (%s);" % (table, ", ".join(parts))
+
+def cols(spec):
+    out = []
+    for w in spec.split():
+        if ":" in w: n, t = w.split(":")
+        else: n, t = w, "I"
+        out.append((n, t))
+    return out
+
+# Układ wzięty z prawdziwego raportu z iPhone'a 4S (iOS 6.1.3)
+ITEM = "item_pid media_type title_order title_order_section item_artist_pid item_artist_order item_artist_order_section series_name_order series_name_order_section album_pid album_order album_order_section album_artist_pid album_artist_order album_artist_order_section composer_pid composer_order composer_order_section genre_id genre_order genre_order_section disc_number track_number location_kind_id episode_sort_id store_link_id category_id base_location_id exclude_from_shuffle"
+EXTRA = ("item_pid title:T sort_title:T disc_count track_count artwork_cache_id location_type location:T extension date_created file_size file_creator file_type "
+         "num_dir_levels_file num_dir_levels_lib integrity:B media_kind date_modified year content_rating content_rating_level is_user_disabled remember_bookmark "
+         "start_time_ms stop_time_ms total_time_ms:R total_burn_time_ms bpm relative_volume eq_preset:T genius_id comment:T grouping:T description:T description_long:T "
+         "collection_description:T is_ota_purchased is_compilation is_itunes_u is_audible_audio_book copyright:T chosen_by_auto_fill is_temporary_cloud_download "
+         "is_streaming_quality store_bookmark_timestamp store_bookmark_entity_revision is_podcast external_guid:T feed_url:T store_kind:T date_purchased date_released "
+         "account_id key_versions key_platform_id key_id store_item_id store_artist_id store_composer_id store_genre_id store_playlist_id storefront_id "
+         "redownload_action_params:B artwork_url:T store_xid:T store_flavor:T store_saga_id store_matched_status store_redownloaded_status audio_format sample_rate:R duration:R "
+         "gapless_heuristic_info gapless_encoding_delay gapless_encoding_drain gapless_last_frame_resynch analysis_inhibit_flags audio_fingerprint "
+         "volume_normalization_energy is_rental is_demo rental_duration rental_playback_duration rental_playback_date_started rental_date_started has_alternate_audio "
+         "has_subtitles is_hd season_number audio_language:T audio_track_index audio_track_id subtitle_language:T subtitle_track_index subtitle_track_id episode_id:T")
+
+def schema_real(weird_index=False):
+    s = []
+    s.append("CREATE TABLE _MLDatabaseProperties (key TEXT PRIMARY KEY, value);")
+    s.append(ddl("album", cols("album_pid album:T sort_album:T album_artist_pid representative_item_pid grouping_key:B cloud_status artwork_cache_id user_rating all_compilations feed_url:T season_number"), "album_pid"))
+    s.append(ddl("album_artist", cols("album_artist_pid album_artist:T sort_album_artist:T grouping_key:B cloud_status artwork_cache_id representative_item_pid"), "album_artist_pid"))
+    s.append("CREATE TABLE artwork_info (cache_id INTEGER, format_id INTEGER, length INTEGER, offset INTEGER, extra_length INTEGER);")
+    s.append(ddl("base_location", cols("base_location_id path:T"), "base_location_id"))
+    s.append(ddl("chapter", cols("item_pid chapter_data:B"), "item_pid"))
+    s.append(ddl("composer", cols("composer_pid composer:T sort_composer:T grouping_key:B cloud_status artwork_cache_id representative_item_pid"), "composer_pid"))
+    s.append(ddl("container", cols("container_pid name:T"), "container_pid"))
+    s.append("CREATE TABLE entity_revision (revision INTEGER PRIMARY KEY, entity_pid INTEGER, deleted INTEGER, class INTEGER, revision_type INTEGER);")
+    s.append(ddl("genre", cols("genre_id genre:T grouping_key:B cloud_status representative_item_pid"), "genre_id"))
+    s.append(ddl("item", cols(ITEM), "item_pid"))
+    s.append(ddl("item_artist", cols("item_artist_pid item_artist:T sort_item_artist:T series_name:T sort_series_name:T grouping_key:B cloud_status representative_item_pid"), "item_artist_pid"))
+    s.append(ddl("item_extra", cols(EXTRA), "item_pid"))
+    s.append(ddl("item_search", cols("item_pid search_title:T search_album:T search_artist:T search_composer:T search_album_artist:T"), "item_pid"))
+    s.append(ddl("item_stats", cols("item_pid has_been_played date_played play_count_user play_count_recent date_skipped skip_count_user skip_count_recent bookmark_time_ms user_rating hidden is_downloading download_identifier"), "item_pid"))
+    s.append(ddl("location_kind", cols("location_kind_id kind:T"), "location_kind_id"))
+    s.append(ddl("lyrics", cols("item_pid checksum lyrics:T"), "item_pid"))
+    s.append(ddl("purgeable_list", cols("item_pid is_alarm date_last_used"), "item_pid"))
+    s.append("CREATE TABLE sort_map (name TEXT NOT NULL, name_order INTEGER NOT NULL, name_section INTEGER NOT NULL, sort_key BLOB);")
+    s.append(ddl("store_link", cols("store_link_id url:T"), "store_link_id"))
+    s.append("CREATE TABLE container_items (container_pid INTEGER PRIMARY KEY, item_pid_data BLOB);")
+    s.append("CREATE INDEX idx_item_album ON item (album_pid);")
+    s.append("CREATE INDEX idx_artist_name ON item_artist (item_artist COLLATE NOCASE);")
+    return "\n".join(s)
 
 def connect(path):
     db = sqlite3.connect(path)
@@ -62,47 +78,67 @@ def connect(path):
     db.create_function("ml3_rev", 1, lambda x: 7)
     return db
 
+NAMES = ["Adele", "Beck", "Coldplay", "Dido", "Eminem", "Foo Fighters", "Gorillaz", "Hole", "Interpol", "Jamiroquai"]
+FOLDERS = ["F%02d" % i for i in (0, 1, 2, 4, 6, 8, 10, 11)]
+BASE_IDS = [-8771592297739899465, -7908286478552848395, -7907096613874481801, -6608787234879945858,
+            -5958817943709028708, -4161266009262072806, -3295185654080969433, -1853857325077040168]
+
 def build_db(path, variant="full", unix=False, tracks=10):
     if os.path.exists(path): os.remove(path)
     db = sqlite3.connect(path)
     if variant == "minimal":
-        db.executescript("""CREATE TABLE item (pid INTEGER PRIMARY KEY, title_order INTEGER, media_type INTEGER NOT NULL DEFAULT 8);
+        db.executescript("""CREATE TABLE item (item_pid INTEGER PRIMARY KEY, title_order INTEGER, media_type INTEGER NOT NULL DEFAULT 8);
                             CREATE TABLE item_extra (item_pid INTEGER PRIMARY KEY, title TEXT, location TEXT NOT NULL DEFAULT '');""")
-        db.execute("INSERT INTO item (pid,title_order) VALUES (1,5)")
-        db.execute("INSERT INTO item_extra VALUES (1,'x','F01/AAAA.mp3')")
+        db.execute("INSERT INTO item (item_pid,title_order) VALUES (1,5)")
+        db.execute("INSERT INTO item_extra VALUES (1,'x','AAAA.mp3')")
         db.commit(); db.close(); return
-    db.executescript(SCHEMA_FULL)
+    db.executescript(schema_real())
     if variant == "collation":
         db.create_collation("ML3_WEIRD", lambda a, b: (a.lower() > b.lower()) - (a.lower() < b.lower()))
         db.executescript("CREATE INDEX idx_weird ON item_extra (title COLLATE ML3_WEIRD);")
     if variant == "trigger":
-        db.executescript("""CREATE TRIGGER trg_item_ai AFTER INSERT ON item BEGIN
-            UPDATE item SET revision_level = ml3_rev(NEW.pid) WHERE pid = NEW.pid; END;""")
         db.create_function("ml3_rev", 1, lambda x: 7)
-    db.execute("INSERT INTO base_location VALUES (3840,'iTunes_Control/Music')")
-    names = ["Adele", "Beck", "Coldplay", "Dido", "Eminem", "Foo Fighters", "Gorillaz", "Hole", "Interpol", "Jamiroquai"]
+        db.executescript("""CREATE TRIGGER trg_item_ai AFTER INSERT ON item BEGIN
+            UPDATE item SET episode_sort_id = ml3_rev(NEW.item_pid) WHERE item_pid = NEW.item_pid; END;""")
+    for i, f in enumerate(FOLDERS):
+        db.execute("INSERT INTO base_location VALUES (?,?)", (BASE_IDS[i], "iTunes_Control/Music/" + f))
+    db.execute("INSERT INTO location_kind VALUES (1,'MPEG audio file')")
+    for i in range(26):
+        db.execute("INSERT INTO sort_map VALUES (?,?,?,x'00')", (chr(97 + i), (i + 1) * 10, i + 1))
     base = 1_300_000_000 if unix else 400_000_000
+    rev = 100
     if variant != "empty":
-        for i, n in enumerate(names[:tracks]):
+        for i, n in enumerate(NAMES[:tracks]):
             pid = 1000 + i
-            db.execute("INSERT INTO sort_map VALUES (?,?,?,x'00')", (n, (i + 1) * 10, 1 + i))
-            db.execute("INSERT INTO artist (pid,name,name_order,name_order_section,sort_name,representative_item_pid,keep_local) VALUES (?,?,?,?,?,?,1)",
-                       (2000 + i, n, (i + 1) * 10, 1 + i, n.lower(), pid))
-            db.execute("INSERT INTO album_artist (pid,name,name_order,name_order_section,sort_name,representative_item_pid) VALUES (?,?,?,?,?,?)",
-                       (3000 + i, n, (i + 1) * 10, 1 + i, n.lower(), pid))
-            db.execute("INSERT INTO album (pid,name,name_order,name_order_section,album_artist_pid,representative_item_pid,feed_url) VALUES (?,?,?,?,?,?,'http://x')",
-                       (4000 + i, "Album " + n, (i + 1) * 10, 1 + i, 3000 + i, pid))
-            db.execute("INSERT INTO genre VALUES (?,?,?,?)", (5000 + i, "Pop" if i == 0 else "G%d" % i, i, 1))
-            db.execute("INSERT INTO item (pid,title_order,title_order_section,item_artist_pid,item_artist_order,album_pid,album_artist_pid,genre_id,base_location_id,date_added,date_downloaded,track_number,in_my_library) VALUES (?,?,?,?,?,?,?,?,3840,?,?,3,1)",
-                       (pid, (i + 1) * 10, 1 + i, 2000 + i, (i + 1) * 10, 4000 + i, 3000 + i, 5000 + i, base + i, base + i))
+            sec = i + 1
+            db.execute("INSERT INTO item_artist (item_artist_pid,item_artist,sort_item_artist,grouping_key,cloud_status,representative_item_pid) VALUES (?,?,?,?,5,?)",
+                       (2000 + i, n, n.lower(), b"grp-artist-" + n.encode(), pid))
+            db.execute("INSERT INTO album_artist (album_artist_pid,album_artist,sort_album_artist,grouping_key,artwork_cache_id,representative_item_pid) VALUES (?,?,?,?,77,?)",
+                       (3000 + i, n, n.lower(), b"grp-aa-" + n.encode(), pid))
+            db.execute("INSERT INTO album (album_pid,album,album_artist_pid,representative_item_pid,grouping_key,artwork_cache_id,user_rating,feed_url) VALUES (?,?,?,?,?,77,60,'http://x')",
+                       (4000 + i, "Album " + n, 3000 + i, pid, b"grp-album-" + n.encode()))
+            db.execute("INSERT INTO genre (genre_id,genre,grouping_key,representative_item_pid) VALUES (?,?,?,?)",
+                       (5000 + i, "Pop" if i == 0 else "G%d" % i, b"grp-genre", pid))
+            f = i % len(FOLDERS)
+            db.execute("INSERT INTO item (item_pid,media_type,title_order,title_order_section,item_artist_pid,item_artist_order,item_artist_order_section,album_pid,album_order,album_order_section,"
+                       "album_artist_pid,album_artist_order,album_artist_order_section,genre_id,genre_order,genre_order_section,track_number,location_kind_id,base_location_id) "
+                       "VALUES (?,8,?,?,?,?,?,?,?,?,?,?,?,?,?,?,3,1,?)",
+                       (pid, (i + 1) * 10, sec, 2000 + i, (i + 1) * 10, sec, 4000 + i, (i + 1) * 10, sec, 3000 + i, (i + 1) * 10, sec, 5000 + i, i, 1, BASE_IDS[f]))
             ext = "mp3" if i % 3 else "m4a"
-            db.execute("INSERT INTO item_extra (item_pid,title,sort_title,total_time_ms,year,location,file_size,integrity,genius_id,date_modified) VALUES (?,?,?,?,?,?,?,x'DEADBEEF',99,?)",
-                       (pid, "Song " + n, "song", 200000.0, 2000 + i, "F%02d/%s.%s" % (i, "ABC" + chr(65 + i), ext), 5000000, base))
-            db.execute("INSERT INTO item_playback (item_pid,audio_format,bit_rate,data_kind,duration,sample_rate,volume_normalization_energy,format) VALUES (?,301,256,1,200000,44100.0,777,3)", (pid,))
-            db.execute("INSERT INTO item_stats (item_pid,user_rating,play_count_user,has_been_played,date_played) VALUES (?,80,12,1,123456)", (pid,))
-            db.execute("INSERT INTO item_store (item_pid,store_item_id,store_saga_id) VALUES (?,555,666)", (pid,))
-            db.execute("INSERT INTO container_item (container_pid,item_pid,position) VALUES (1,?,?)", (pid, i))
-            db.execute("INSERT INTO lyrics VALUES (?, 'la la')", (pid,))
+            fn = "ABC%s.%s" % (chr(65 + i), ext)
+            db.execute("INSERT INTO item_extra (item_pid,title,sort_title,total_time_ms,year,location,file_size,integrity,genius_id,date_modified,date_created,extension,"
+                       "location_type,audio_format,sample_rate,duration,artwork_cache_id,comment,store_item_id,file_type) "
+                       "VALUES (?,?,?,?,?,?,?,x'DEADBEEF',99,?,?,?,1179208773,?,44100.0,200.0,77,'komentarz',555,?)",
+                       (pid, "Song " + n, "song", 200000.0, 2000 + i, fn, 5000000, base, base, 1 if ext == "mp3" else 3,
+                        301 if ext == "mp3" else 502, 1297101601 if ext == "mp3" else 1295270176))
+            db.execute("INSERT INTO item_search VALUES (?,?,?,?,?,?)", (pid, "song " + n.lower(), "album " + n.lower(), n.lower(), "", n.lower()))
+            db.execute("INSERT INTO item_stats (item_pid,user_rating,play_count_user,has_been_played,date_played,download_identifier) VALUES (?,80,12,1,123456,9)", (pid,))
+            db.execute("INSERT INTO purgeable_list VALUES (?,0,?)", (pid, base))
+            for cls, key in ((0, pid), (1, 2000 + i), (2, 4000 + i), (3, 3000 + i), (4, 5000 + i)):
+                rev += 1
+                db.execute("INSERT INTO entity_revision VALUES (?,?,0,?,0)", (rev, key, cls))
+    db.execute("INSERT INTO _MLDatabaseProperties VALUES ('LibraryRevision', ?)", (rev,))
+    db.execute("INSERT INTO _MLDatabaseProperties VALUES ('DatabaseVersion', 1111)")
     db.commit(); db.close()
 
 def run(args, asan=True):
@@ -120,6 +156,8 @@ def parse_results(out):
         res.append(dict(i=int(m.group(1)), ok=int(m.group(2)), pid=int(m.group(3)), rel=m.group(4), err=m.group(5), ents=ents))
     return ret, res
 
+PER_ITEM = ["item_extra", "item_search", "item_stats", "purgeable_list"]
+
 def scenario(name, variant, unix=False, expect_ok=4, tracks=10):
     print("==", name)
     tmp = tempfile.mkdtemp(prefix="milib_")
@@ -129,6 +167,11 @@ def scenario(name, variant, unix=False, expect_ok=4, tracks=10):
     dbp = os.path.join(media, "iTunes_Control", "iTunes", "MediaLibrary.sqlitedb")
     build_db(dbp, variant, unix, tracks)
     bk = os.path.join(tmp, "Kopie")
+    fulltype = variant in ("full", "collation", "trigger")
+    if fulltype:
+        d0 = connect(dbp)
+        old_rev = d0.execute("SELECT max(revision) FROM entity_revision").fetchone()[0]
+        d0.close()
     out = run(["import", dbp, bk, tmp])
     ret, res = parse_results(out)
     check(ret == expect_ok, "import zwrócił %d, oczekiwano %d\n%s" % (ret, expect_ok, out[-2500:]))
@@ -142,40 +185,76 @@ def scenario(name, variant, unix=False, expect_ok=4, tracks=10):
         full = os.path.join(media, "iTunes_Control", "Music", r["rel"])
         check(os.path.isfile(full), "brak pliku " + full)
         check(re.match(r"^F\d\d/[A-Z]{4}\.(mp3|m4a|wav)$", r["rel"]) is not None, "zła nazwa pliku " + r["rel"])
-        check(db.execute("SELECT count(*) FROM item WHERE pid=?", (r["pid"],)).fetchone()[0] == 1, "brak item")
+        check(db.execute("SELECT count(*) FROM item WHERE item_pid=?", (r["pid"],)).fetchone()[0] == 1, "brak item")
         loc = db.execute("SELECT location FROM item_extra WHERE item_pid=?", (r["pid"],)).fetchone()
-        check(loc is not None and loc[0] == r["rel"], "location w item_extra: %r" % (loc,))
-    if variant == "full" or variant == "collation" or variant == "trigger" or variant == "unix":
+        if variant == "minimal":
+            check(loc is not None and loc[0] == r["rel"], "location w item_extra: %r" % (loc,))
+        else:
+            folder, fname = r["rel"].split("/")
+            check(loc is not None and loc[0] == fname, "location powinno być samą nazwą pliku: %r" % (loc,))
+            bl = db.execute("SELECT path FROM base_location WHERE base_location_id = (SELECT base_location_id FROM item WHERE item_pid=?)", (r["pid"],)).fetchone()
+            check(bl is not None and bl[0] == "iTunes_Control/Music/" + folder, "base_location nie zgadza się z folderem pliku: %r vs %s" % (bl, folder))
+    if variant in ("full", "collation", "trigger", "empty"):
+        for r in res:
+            if not r["ok"]: continue
+            for t in PER_ITEM:
+                if variant == "empty" and t == "purgeable_list": continue
+                check(db.execute("SELECT count(*) FROM %s WHERE item_pid=?" % t, (r["pid"],)).fetchone()[0] == 1, "brak wiersza w %s" % t)
+    if fulltype:
         r0 = res[0]
-        row = db.execute("SELECT item_artist_pid, album_pid, genre_id, track_number, disc_number, date_added, base_location_id, album_artist_pid, title_order FROM item WHERE pid=?", (r0["pid"],)).fetchone()
+        row = db.execute("SELECT item_artist_pid, album_pid, genre_id, track_number, disc_number, base_location_id, album_artist_pid, title_order, title_order_section, media_type, location_kind_id FROM item WHERE item_pid=?", (r0["pid"],)).fetchone()
         check(row[0] != 0 and row[1] != 0 and row[2] != 0, "powiązania item: %r" % (row,))
         check(row[3] == 1, "track_number")
-        want_date = 1_700_000_000 if unix else 1
-        if unix: check(row[5] > 1_700_000_000, "data unix: %r" % row[5])
-        else: check(0 < row[5] < 1_000_000_000, "data 2001: %r" % row[5])
-        check(row[6] == 3840, "base_location")
-        check(db.execute("SELECT name FROM artist WHERE pid=?", (row[0],)).fetchone() == ("Nowy Wykonawca",), "artist")
-        check(db.execute("SELECT name FROM album WHERE pid=?", (row[1],)).fetchone() == ("Nowy Album",), "album")
+        check(row[9] == 8 and row[10] == 1, "media_type/location_kind_id ze wzoru: %r" % (row,))
+        check(row[7] == 260 and row[8] == 26, "kolejność sortowania tytułu: %r" % (row[7:9],))
+        check(db.execute("SELECT item_artist FROM item_artist WHERE item_artist_pid=?", (row[0],)).fetchone() == ("Nowy Wykonawca",), "item_artist")
+        check(db.execute("SELECT album FROM album WHERE album_pid=?", (row[1],)).fetchone() == ("Nowy Album",), "album")
         check(db.execute("SELECT genre FROM genre WHERE genre_id=?", (row[2],)).fetchone() == ("Rock",), "genre")
-        check(db.execute("SELECT album_artist_pid FROM album WHERE pid=?", (row[1],)).fetchone()[0] == row[7], "album_artist_pid w album")
+        check(db.execute("SELECT album_artist FROM album_artist WHERE album_artist_pid=?", (row[6],)).fetchone() == ("Nowy Wykonawca",), "album_artist")
+        check(db.execute("SELECT album_artist_pid FROM album WHERE album_pid=?", (row[1],)).fetchone()[0] == row[6], "album_artist_pid w album")
+        # wiersze pomocnicze nie dziedziczą cudzych danych ze wzoru
+        a = db.execute("SELECT grouping_key, cloud_status, representative_item_pid, sort_item_artist FROM item_artist WHERE item_artist_pid=?", (row[0],)).fetchone()
+        check(a[0] == b"nowy wykonawca" and a[1] == 0 and a[2] == r0["pid"] and a[3] is None, "item_artist: %r" % (a,))
+        al = db.execute("SELECT artwork_cache_id, user_rating, feed_url, grouping_key FROM album WHERE album_pid=?", (row[1],)).fetchone()
+        check(al[0] == 0 and al[1] == 0 and al[2] is None and al[3].startswith(b"nowy album"), "album: %r" % (al,))
+        check(db.execute("SELECT artwork_cache_id FROM album_artist WHERE album_artist_pid=?", (row[6],)).fetchone() == (0,), "album_artist artwork")
         # drugi utwór używa tych samych wierszy
-        row2 = db.execute("SELECT item_artist_pid, album_pid, genre_id FROM item WHERE pid=?", (res[1]["pid"],)).fetchone()
+        row2 = db.execute("SELECT item_artist_pid, album_pid, genre_id FROM item WHERE item_pid=?", (res[1]["pid"],)).fetchone()
         check(row2 == row[:3], "drugi utwór powinien współdzielić wykonawcę/album/gatunek: %r vs %r" % (row2, row[:3]))
-        # liczba wierszy nowych wykonawców: Nowy Wykonawca + Istniejący (nowy, bo nie ma takiego)
-        check(db.execute("SELECT count(*) FROM artist WHERE name='Nowy Wykonawca'").fetchone()[0] == 1, "duplikat wykonawcy")
-        # nie skopiowano statystyk wzoru
-        ex = db.execute("SELECT genius_id, integrity, total_time_ms, year FROM item_extra WHERE item_pid=?", (r0["pid"],)).fetchone()
+        check(db.execute("SELECT count(*) FROM item_artist WHERE item_artist='Nowy Wykonawca'").fetchone()[0] == 1, "duplikat wykonawcy")
+        # item_extra: pola utworu i czyszczenie wzoru
+        ex = db.execute("SELECT genius_id, integrity, total_time_ms, year, duration, sample_rate, extension, audio_format, artwork_cache_id, comment, store_item_id, "
+                        "file_type, location_type, file_size, date_created, date_modified, title FROM item_extra WHERE item_pid=?", (r0["pid"],)).fetchone()
         check(ex[0] == 0 and ex[1] is None, "wzór nie został wyczyszczony: %r" % (ex,))
         check(ex[2] == 215000 and ex[3] == 2021, "czas/rok: %r" % (ex,))
-        st = db.execute("SELECT user_rating, play_count_user FROM item_stats WHERE item_pid=?", (r0["pid"],)).fetchone()
-        check(st == (0, 0), "item_stats: %r" % (st,))
-        so = db.execute("SELECT store_item_id FROM item_store WHERE item_pid=?", (r0["pid"],)).fetchone()
-        check(so == (0,), "item_store: %r" % (so,))
-        pb = db.execute("SELECT bit_rate, sample_rate, duration, volume_normalization_energy FROM item_playback WHERE item_pid=?", (r0["pid"],)).fetchone()
-        check(pb == (192, 44100.0, 215000, 0), "item_playback: %r" % (pb,))
+        check(abs(ex[4] - 215.0) < 0.01, "duration (sekundy): %r" % (ex[4],))
+        check(ex[5] == 44100, "sample_rate")
+        check(ex[6] == 1 and ex[7] == 301, "kody formatu mp3 ze wzoru: %r" % (ex[6:8],))
+        check(ex[8] == 0 and ex[9] is None and ex[10] == 0, "okładka/komentarz/sklep: %r" % (ex[8:11],))
+        check(ex[11] == 1297101601 and ex[12] == 1179208773, "file_type/location_type ze wzoru")
+        check(ex[13] == 4010, "file_size: %r" % (ex[13],))
+        if unix: check(ex[14] > 1_700_000_000 and ex[15] > 1_700_000_000, "data unix: %r" % (ex[14:16],))
+        else: check(0 < ex[14] < 1_000_000_000 and 0 < ex[15] < 1_000_000_000, "data 2001: %r" % (ex[14:16],))
+        check(ex[16] == "Zażółć gęślą jaźń", "title")
+        ex2 = db.execute("SELECT extension, audio_format, duration FROM item_extra WHERE item_pid=?", (res[2]["pid"],)).fetchone()
+        check(ex2[0] == 3 and ex2[1] == 502 and abs(ex2[2] - 60.0) < 0.01, "kody formatu m4a ze wzoru: %r" % (ex2,))
+        srch = db.execute("SELECT search_title, search_album, search_artist, search_composer, search_album_artist FROM item_search WHERE item_pid=?", (r0["pid"],)).fetchone()
+        check(srch == ("zażółć gęślą jaźń", "nowy album", "nowy wykonawca", "", "nowy wykonawca"), "item_search: %r" % (srch,))
+        st = db.execute("SELECT user_rating, play_count_user, has_been_played, date_played, download_identifier FROM item_stats WHERE item_pid=?", (r0["pid"],)).fetchone()
+        check(st == (0, 0, 0, 0, 0), "item_stats: %r" % (st,))
+        pl = db.execute("SELECT is_alarm, date_last_used FROM purgeable_list WHERE item_pid=?", (r0["pid"],)).fetchone()
+        check(pl[0] == 0 and pl[1] > 0, "purgeable_list: %r" % (pl,))
         # utwór bez tagów: tytuł zastępczy
         t3 = db.execute("SELECT title FROM item_extra WHERE item_pid=?", (res[3]["pid"],)).fetchone()
         check(t3 == ("Bez tytułu",), "tytuł zastępczy: %r" % (t3,))
+        # dziennik zmian
+        rv = dict(((a, b), c) for a, b, c in db.execute("SELECT entity_pid, class, revision FROM entity_revision WHERE revision > ?", (old_rev,)))
+        check((r0["pid"], 0) in rv, "entity_revision dla utworu")
+        check((row[0], 1) in rv and (row[1], 2) in rv and (row[6], 3) in rv and (row[2], 4) in rv, "entity_revision dla wykonawcy/albumu/gatunku: %r" % (rv,))
+        newmax = db.execute("SELECT max(revision) FROM entity_revision").fetchone()[0]
+        check(sorted(rv.values()) == list(range(old_rev + 1, newmax + 1)), "numery wersji powinny być ciągłe")
+        check(db.execute("SELECT value FROM _MLDatabaseProperties WHERE key='LibraryRevision'").fetchone()[0] == newmax, "licznik wersji")
+        check(db.execute("SELECT value FROM _MLDatabaseProperties WHERE key='DatabaseVersion'").fetchone()[0] == 1111, "inne właściwości bez zmian")
     db.close()
     # usuwanie pierwszego utworu
     if res and res[0]["ok"]:
@@ -184,24 +263,35 @@ def scenario(name, variant, unix=False, expect_ok=4, tracks=10):
         out = run(args)
         check("RETURN 1" in out, "remove: %s" % out[-800:])
         db = connect(dbp)
-        check(db.execute("SELECT count(*) FROM item WHERE pid=?", (res[0]["pid"],)).fetchone()[0] == 0, "item nie usunięty")
-        check(db.execute("SELECT count(*) FROM item_extra WHERE item_pid=?", (res[0]["pid"],)).fetchone()[0] == 0, "item_extra nie usunięty")
+        check(db.execute("SELECT count(*) FROM item WHERE item_pid=?", (res[0]["pid"],)).fetchone()[0] == 0, "item nie usunięty")
+        for t in (PER_ITEM if variant != "minimal" else ["item_extra"]):
+            check(db.execute("SELECT count(*) FROM %s WHERE item_pid=?" % t, (res[0]["pid"],)).fetchone()[0] == 0, "%s nie usunięty" % t)
         check(not os.path.exists(os.path.join(media, "iTunes_Control", "Music", res[0]["rel"])), "plik nie usunięty")
-        if variant in ("full", "collation", "trigger", "unix"):
-            check(db.execute("SELECT count(*) FROM artist WHERE name='Nowy Wykonawca'").fetchone()[0] == 1, "wykonawca użyty przez drugi utwór nie może zniknąć")
+        if fulltype:
+            check(db.execute("SELECT count(*) FROM entity_revision WHERE entity_pid=?", (res[0]["pid"],)).fetchone()[0] == 0, "entity_revision utworu nie usunięty")
+            check(db.execute("SELECT count(*) FROM item_artist WHERE item_artist='Nowy Wykonawca'").fetchone()[0] == 1, "wykonawca użyty przez drugi utwór nie może zniknąć")
+            rp = db.execute("SELECT representative_item_pid FROM item_artist WHERE item_artist='Nowy Wykonawca'").fetchone()[0]
+            check(rp == res[1]["pid"], "representative_item_pid powinien wskazywać na drugi utwór: %r" % rp)
+            rp = db.execute("SELECT representative_item_pid FROM album WHERE album='Nowy Album'").fetchone()[0]
+            check(rp == res[1]["pid"], "representative_item_pid albumu")
         # usuń drugi: wykonawca, album, gatunek powinni zniknąć
-        if len(res) > 1 and res[1]["ok"] and variant in ("full", "collation", "trigger", "unix"):
+        if len(res) > 1 and res[1]["ok"] and fulltype:
             args = ["remove", dbp, str(res[1]["pid"]), res[1]["rel"]] + [x for e in res[0]["ents"] for x in e]
             out = run(args)
             check("RETURN 1" in out, "remove 2")
             db2 = connect(dbp)
-            check(db2.execute("SELECT count(*) FROM artist WHERE name='Nowy Wykonawca'").fetchone()[0] == 0, "osierocony wykonawca nie został usunięty")
-            check(db2.execute("SELECT count(*) FROM album WHERE name='Nowy Album'").fetchone()[0] == 0, "osierocony album nie został usunięty")
+            check(db2.execute("SELECT count(*) FROM item_artist WHERE item_artist='Nowy Wykonawca'").fetchone()[0] == 0, "osierocony wykonawca nie został usunięty")
+            check(db2.execute("SELECT count(*) FROM album WHERE album='Nowy Album'").fetchone()[0] == 0, "osierocony album nie został usunięty")
+            check(db2.execute("SELECT count(*) FROM genre WHERE genre='Rock'").fetchone()[0] == 0, "osierocony gatunek nie został usunięty")
+            for ent in res[0]["ents"]:
+                check(db2.execute("SELECT count(*) FROM entity_revision WHERE entity_pid=?", (int(ent[3]),)).fetchone()[0] == 0, "entity_revision encji %s nie usunięty" % ent[0])
             db2.close()
         db.close()
     # diagnostyka
     out = run(["diagnose", dbp])
     check("RETURN 1" in out and "item_extra" in out, "diagnose")
+    if fulltype:
+        check("Przykładowy utwór item_pid=" in out and "base_location" in out and "_MLDatabaseProperties" in out, "diagnose: brak próbek")
     # przywracanie kopii
     out = run(["restore", dbp, bk])
     check("RETURN 1" in out, "restore: " + out[-300:])
@@ -217,7 +307,6 @@ def main():
                            os.path.join(HERE, "lib_cli.c"), os.path.join(HERE, "..", "mi_lib.c"), os.path.join(HERE, "..", "mi_core.c"),
                            "-lsqlite3", "-o", CLI])
     scenario("pełny schemat, daty od 2001", "full")
-    scenario("pełny schemat, daty unix", "unix", unix=True) if False else None
     scenario("daty unix", "full", unix=True)
     scenario("własne porównywanie napisów w indeksie", "collation", expect_ok=4)
     scenario("wyzwalacz z nieznaną funkcją", "trigger", expect_ok=4)

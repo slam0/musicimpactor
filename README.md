@@ -28,7 +28,7 @@ Nie ma pobierania z YouTube ani ze Spotify – to narusza prawa autorskie i regu
 ## Co robi przy zapisie (i jak się zabezpiecza)
 
 Muzyka na iOS 6 trzyma bibliotekę w bazie SQLite `/var/mobile/Media/iTunes_Control/iTunes/MediaLibrary.sqlitedb`, a pliki w `iTunes_Control/Music/F00…F49/ABCD.mp3`.
-Dokładnego schematu tej bazy nie znamy na pewno, dlatego zapis jest „adaptacyjny”:
+Od wersji 1.0.2 zapis jest dopasowany do prawdziwego układu bazy z iPhone'a 4S z iOS 6.1.3 (`item_pid`, `item_artist`, `item_extra`, `item_search`, `item_stats`, `purgeable_list`, `entity_revision`, osobny wiersz `base_location` na każdy folder Fxx), ale nadal jest „adaptacyjny”:
 
 * sprawdza, jakie tabele i kolumny są w bazie, a jako wzór bierze wiersze jednego istniejącego utworu (najlepiej w tym samym formacie) i klonuje je z podmienionymi polami,
 * wykonawcę, album, wykonawcę albumu i gatunek znajduje albo tworzy,
@@ -36,7 +36,7 @@ Dokładnego schematu tej bazy nie znamy na pewno, dlatego zapis jest „adaptacy
 * gdy baza jest zajęta (otwarta Muzyka), przerywa bez zmian,
 * o wszystkim pisze w raporcie (Ustawienia → Ostatni raport), który można skopiować.
 
-Logika zapisu jest sprawdzona na kilku sztucznych bazach (`tests/lib_test.py`: pełny schemat, pusta biblioteka, minimalny schemat, daty od 1970 i od 2001, własne porównywanie napisów, wyzwalacz z nieznaną funkcją, uszkodzona i zablokowana baza).
+Logika zapisu jest sprawdzona na sztucznych bazach o układzie z prawdziwego raportu (`tests/lib_test.py`: pełny schemat, pusta biblioteka, minimalny schemat, daty od 1970 i od 2001, własne porównywanie napisów, wyzwalacz z nieznaną funkcją, uszkodzona i zablokowana baza).
 Prawdziwą bazę z iOS 6 zobaczy dopiero Twój telefon – jeśli coś nie zadziała, wejdź w **Ustawienia → Diagnostyka biblioteki** i **Ostatni raport**, skopiuj oba teksty i prześlij autorowi.
 
 Po dodaniu aplikacja zamyka aplikację Muzyka (można wyłączyć w Ustawieniach), żeby wczytała bibliotekę od nowa. Gdy utworów nadal nie widać: Ustawienia → **Zrestartuj (respring)**, a w ostateczności zrestartuj telefon.
