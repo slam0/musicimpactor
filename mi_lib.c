@@ -957,6 +957,87 @@ done:
     return ok;
 }
 
+static void diagnose_db(sqlite3 *db, rep_t *r)
+{
+    sqlite3_stmt *st = NULL;
+    char names[MAXT][48];
+    int nt = 0, i, k;
+    if (sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name", -1, &st, NULL) == SQLITE_OK) {
+        while (sqlite3_step(st) == SQLITE_ROW && nt < MAXT) scopy(names[nt++], sizeof names[0], (const char *)sqlite3_column_text(st, 0));
+        sqlite3_finalize(st);
+    }
+    rep(r, "\nTabele (%d):\n", nt);
+    for (i = 0; i < nt; i++) {
+        tbl_t t;
+        char q[200], qi[110];
+        int f;
+        long long cnt = -1;
+        quote_ident(qi, sizeof qi, names[i]);
+        if (is_virtual_table(db, names[i])) { rep(r, "- %s [wirtualna]\n", names[i]); continue; }
+        snprintf(q, sizeof q, "SELECT count(*) FROM %s", qi);
+        cnt = query_int(db, q, &f);
+        tbl_load(db, names[i], &t);
+        rep(r, "- %s (%lld wierszy):", names[i], f ? cnt : -1LL);
+        for (k = 0; k < t.n; k++) rep(r, " %s%s", t.c[k].name, t.c[k].pk ? "*" : "");
+        rep(r, "\n");
+    }
+    /* indeksy i wyzwalacze */
+    if (sqlite3_prepare_v2(db, "SELECT type, name FROM sqlite_master WHERE type IN ('trigger') ORDER BY name", -1, &st, NULL) == SQLITE_OK) {
+        int any = 0;
+        while (sqlite3_step(st) == SQLITE_ROW) { if (!any) rep(r, "\nWyzwalacze:"); any = 1; rep(r, " %s", sqlite3_column_text(st, 1)); }
+        if (any) rep(r, "\n");
+        sqlite3_finalize(st);
+    }
+    if (sqlite3_prepare_v2(db, "SELECT sql FROM sqlite_master WHERE sql LIKE '%COLLATE%' AND type='index' LIMIT 6", -1, &st, NULL) == SQLITE_OK) {
+        int any = 0;
+        while (sqlite3_step(st) == SQLITE_ROW) { if (!any) rep(r, "\nIndeksy z COLLATE:\n"); any = 1; rep(r, "  %.150s\n", sqlite3_column_text(st, 0)); }
+        sqlite3_finalize(st);
+    }
+    /* base_location */
+    if (table_exists(db, "base_location") && sqlite3_prepare_v2(db, "SELECT * FROM base_location LIMIT 8", -1, &st, NULL) == SQLITE_OK) {
+        rep(r, "\nbase_location:\n");
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            int cc = sqlite3_column_count(st);
+            rep(r, " ");
+            for (k = 0; k < cc; k++) rep(r, " %s=%.80s", sqlite3_column_name(st, k), sqlite3_column_text(st, k) ? (const char *)sqlite3_column_text(st, k) : "NULL");
+            rep(r, "\n");
+        }
+        sqlite3_finalize(st);
+    }
+    /* przykładowy utwór */
+    {
+        int f;
+        long long pid = query_int(db, "SELECT pid FROM item WHERE pid IN (SELECT item_pid FROM item_extra WHERE location LIKE '%.mp3') LIMIT 1", &f);
+        if (!f) pid = query_int(db, "SELECT pid FROM item ORDER BY pid LIMIT 1", &f);
+        if (f) {
+            static const char *const tn[] = { "item", "item_extra", "item_playback", "item_stats", "item_store", NULL };
+            rep(r, "\nPrzykładowy utwór pid=%lld:\n", pid);
+            for (i = 0; tn[i]; i++) {
+                tbl_t t;
+                row_t row;
+                const char *keycol = ieq(tn[i], "item") ? "pid" : "item_pid";
+                char w[80];
+                if (!table_exists(db, tn[i]) || !tbl_load(db, tn[i], &t)) continue;
+                snprintf(w, sizeof w, "%s = ?1", keycol);
+                if (!row_read(db, &t, w, 1, pid, &row)) { rep(r, " %s: (brak wiersza)\n", tn[i]); continue; }
+                rep(r, " %s:", tn[i]);
+                for (k = 0; k < t.n; k++) {
+                    const val_t *v = &row.v[k];
+                    switch (v->type) {
+                        case SQLITE_INTEGER: rep(r, " %s=%lld", t.c[k].name, v->i); break;
+                        case SQLITE_FLOAT: rep(r, " %s=%g", t.c[k].name, v->d); break;
+                        case SQLITE_TEXT: rep(r, " %s=\"%.40s\"", t.c[k].name, v->s ? v->s : ""); break;
+                        case SQLITE_BLOB: rep(r, " %s=<blob %d>", t.c[k].name, v->n); break;
+                        default: rep(r, " %s=NULL", t.c[k].name); break;
+                    }
+                }
+                rep(r, "\n");
+                row_free(&row);
+            }
+        }
+    }
+}
+
 /* ------------------------------------------------------------------ kopie zapasowe */
 
 static int cmp_str(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
@@ -1041,6 +1122,8 @@ int mi_lib_import(const char *db_path, const char *backup_dir, const mi_lib_trac
     c->has_item = tbl_load(db, "item", &c->item);
     if (!c->has_item || col_index(&c->item, "pid") < 0) {
         rep(r, "W bazie nie ma tabeli item z kolumną pid - to nie wygląda na bibliotekę Muzyki z iOS 6.\n");
+        rep(r, "\nOpis bazy (prześlij go autorowi):\n");
+        diagnose_db(db, r);
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL); sqlite3_close(db); free(c);
         return -1;
     }
@@ -1233,9 +1316,6 @@ int mi_lib_diagnose(const char *db_path, char *out, int cap)
 {
     rep_t rp, *r = &rp;
     sqlite3 *db = NULL;
-    sqlite3_stmt *st = NULL;
-    char names[MAXT][48];
-    int nt = 0, i, k;
     struct stat sb;
 
     rp.buf = out; rp.cap = cap; rp.len = 0;
@@ -1243,81 +1323,7 @@ int mi_lib_diagnose(const char *db_path, char *out, int cap)
     rep(r, "Music Impactor - diagnostyka biblioteki\nBaza: %s\nSQLite: %s\n", db_path, sqlite3_libversion());
     if (stat(db_path, &sb) == 0) rep(r, "Rozmiar pliku: %ld B\n", (long)sb.st_size);
     if (!open_db(db_path, &db, r)) return 0;
-
-    if (sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name", -1, &st, NULL) == SQLITE_OK) {
-        while (sqlite3_step(st) == SQLITE_ROW && nt < MAXT) scopy(names[nt++], sizeof names[0], (const char *)sqlite3_column_text(st, 0));
-        sqlite3_finalize(st);
-    }
-    rep(r, "\nTabele (%d):\n", nt);
-    for (i = 0; i < nt; i++) {
-        tbl_t t;
-        char q[200], qi[110];
-        int f;
-        long long cnt = -1;
-        quote_ident(qi, sizeof qi, names[i]);
-        if (is_virtual_table(db, names[i])) { rep(r, "- %s [wirtualna]\n", names[i]); continue; }
-        snprintf(q, sizeof q, "SELECT count(*) FROM %s", qi);
-        cnt = query_int(db, q, &f);
-        tbl_load(db, names[i], &t);
-        rep(r, "- %s (%lld wierszy):", names[i], f ? cnt : -1LL);
-        for (k = 0; k < t.n; k++) rep(r, " %s%s", t.c[k].name, t.c[k].pk ? "*" : "");
-        rep(r, "\n");
-    }
-    /* indeksy i wyzwalacze */
-    if (sqlite3_prepare_v2(db, "SELECT type, name FROM sqlite_master WHERE type IN ('trigger') ORDER BY name", -1, &st, NULL) == SQLITE_OK) {
-        int any = 0;
-        while (sqlite3_step(st) == SQLITE_ROW) { if (!any) rep(r, "\nWyzwalacze:"); any = 1; rep(r, " %s", sqlite3_column_text(st, 1)); }
-        if (any) rep(r, "\n");
-        sqlite3_finalize(st);
-    }
-    if (sqlite3_prepare_v2(db, "SELECT sql FROM sqlite_master WHERE sql LIKE '%COLLATE%' AND type='index' LIMIT 6", -1, &st, NULL) == SQLITE_OK) {
-        int any = 0;
-        while (sqlite3_step(st) == SQLITE_ROW) { if (!any) rep(r, "\nIndeksy z COLLATE:\n"); any = 1; rep(r, "  %.150s\n", sqlite3_column_text(st, 0)); }
-        sqlite3_finalize(st);
-    }
-    /* base_location */
-    if (table_exists(db, "base_location") && sqlite3_prepare_v2(db, "SELECT * FROM base_location LIMIT 8", -1, &st, NULL) == SQLITE_OK) {
-        rep(r, "\nbase_location:\n");
-        while (sqlite3_step(st) == SQLITE_ROW) {
-            int cc = sqlite3_column_count(st);
-            rep(r, " ");
-            for (k = 0; k < cc; k++) rep(r, " %s=%.80s", sqlite3_column_name(st, k), sqlite3_column_text(st, k) ? (const char *)sqlite3_column_text(st, k) : "NULL");
-            rep(r, "\n");
-        }
-        sqlite3_finalize(st);
-    }
-    /* przykładowy utwór */
-    {
-        int f;
-        long long pid = query_int(db, "SELECT pid FROM item WHERE pid IN (SELECT item_pid FROM item_extra WHERE location LIKE '%.mp3') LIMIT 1", &f);
-        if (!f) pid = query_int(db, "SELECT pid FROM item ORDER BY pid LIMIT 1", &f);
-        if (f) {
-            static const char *const tn[] = { "item", "item_extra", "item_playback", "item_stats", "item_store", NULL };
-            rep(r, "\nPrzykładowy utwór pid=%lld:\n", pid);
-            for (i = 0; tn[i]; i++) {
-                tbl_t t;
-                row_t row;
-                const char *keycol = ieq(tn[i], "item") ? "pid" : "item_pid";
-                char w[80];
-                if (!table_exists(db, tn[i]) || !tbl_load(db, tn[i], &t)) continue;
-                snprintf(w, sizeof w, "%s = ?1", keycol);
-                if (!row_read(db, &t, w, 1, pid, &row)) { rep(r, " %s: (brak wiersza)\n", tn[i]); continue; }
-                rep(r, " %s:", tn[i]);
-                for (k = 0; k < t.n; k++) {
-                    const val_t *v = &row.v[k];
-                    switch (v->type) {
-                        case SQLITE_INTEGER: rep(r, " %s=%lld", t.c[k].name, v->i); break;
-                        case SQLITE_FLOAT: rep(r, " %s=%g", t.c[k].name, v->d); break;
-                        case SQLITE_TEXT: rep(r, " %s=\"%.40s\"", t.c[k].name, v->s ? v->s : ""); break;
-                        case SQLITE_BLOB: rep(r, " %s=<blob %d>", t.c[k].name, v->n); break;
-                        default: rep(r, " %s=NULL", t.c[k].name); break;
-                    }
-                }
-                rep(r, "\n");
-                row_free(&row);
-            }
-        }
-    }
+    diagnose_db(db, r);
     sqlite3_close(db);
     return 1;
 }
