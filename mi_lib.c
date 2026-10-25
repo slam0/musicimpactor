@@ -1401,6 +1401,153 @@ done:
     return ok;
 }
 
+/* ------------------------------------------------------------------ skróty plików (do analizy pola integrity) */
+
+typedef struct { unsigned h[8]; unsigned char buf[64]; unsigned long long len; int fill; int algo; } hash_t;   /* algo: 1 = MD5, 2 = SHA-1, 3 = SHA-256 */
+
+static unsigned rol32(unsigned x, int n) { return (x << n) | (x >> (32 - n)); }
+static unsigned ror32(unsigned x, int n) { return (x >> n) | (x << (32 - n)); }
+
+static const unsigned kMd5K[64] = {
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
+};
+static const unsigned char kMd5S[64] = {
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+};
+static const unsigned kSha256K[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+};
+
+static void hash_init(hash_t *s, int algo)
+{
+    memset(s, 0, sizeof *s);
+    s->algo = algo;
+    if (algo == 1) { s->h[0] = 0x67452301; s->h[1] = 0xefcdab89; s->h[2] = 0x98badcfe; s->h[3] = 0x10325476; }
+    else if (algo == 2) { s->h[0] = 0x67452301; s->h[1] = 0xefcdab89; s->h[2] = 0x98badcfe; s->h[3] = 0x10325476; s->h[4] = 0xc3d2e1f0; }
+    else {
+        s->h[0] = 0x6a09e667; s->h[1] = 0xbb67ae85; s->h[2] = 0x3c6ef372; s->h[3] = 0xa54ff53a;
+        s->h[4] = 0x510e527f; s->h[5] = 0x9b05688c; s->h[6] = 0x1f83d9ab; s->h[7] = 0x5be0cd19;
+    }
+}
+
+static void hash_block(hash_t *s, const unsigned char *p)
+{
+    unsigned w[80];
+    int i;
+    if (s->algo == 1) {
+        unsigned a = s->h[0], b = s->h[1], c = s->h[2], d = s->h[3];
+        for (i = 0; i < 16; i++) w[i] = (unsigned)p[i * 4] | ((unsigned)p[i * 4 + 1] << 8) | ((unsigned)p[i * 4 + 2] << 16) | ((unsigned)p[i * 4 + 3] << 24);
+        for (i = 0; i < 64; i++) {
+            unsigned f, g, t;
+            if (i < 16) { f = (b & c) | (~b & d); g = (unsigned)i; }
+            else if (i < 32) { f = (d & b) | (~d & c); g = (unsigned)((5 * i + 1) & 15); }
+            else if (i < 48) { f = b ^ c ^ d; g = (unsigned)((3 * i + 5) & 15); }
+            else { f = c ^ (b | ~d); g = (unsigned)((7 * i) & 15); }
+            t = d; d = c; c = b;
+            b = b + rol32(a + f + kMd5K[i] + w[g], kMd5S[i]);
+            a = t;
+        }
+        s->h[0] += a; s->h[1] += b; s->h[2] += c; s->h[3] += d;
+    } else if (s->algo == 2) {
+        unsigned a = s->h[0], b = s->h[1], c = s->h[2], d = s->h[3], e = s->h[4];
+        for (i = 0; i < 16; i++) w[i] = ((unsigned)p[i * 4] << 24) | ((unsigned)p[i * 4 + 1] << 16) | ((unsigned)p[i * 4 + 2] << 8) | (unsigned)p[i * 4 + 3];
+        for (i = 16; i < 80; i++) w[i] = rol32(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+        for (i = 0; i < 80; i++) {
+            unsigned f, k, t;
+            if (i < 20) { f = (b & c) | (~b & d); k = 0x5a827999; }
+            else if (i < 40) { f = b ^ c ^ d; k = 0x6ed9eba1; }
+            else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8f1bbcdc; }
+            else { f = b ^ c ^ d; k = 0xca62c1d6; }
+            t = rol32(a, 5) + f + e + k + w[i];
+            e = d; d = c; c = rol32(b, 30); b = a; a = t;
+        }
+        s->h[0] += a; s->h[1] += b; s->h[2] += c; s->h[3] += d; s->h[4] += e;
+    } else {
+        unsigned v[8];
+        for (i = 0; i < 16; i++) w[i] = ((unsigned)p[i * 4] << 24) | ((unsigned)p[i * 4 + 1] << 16) | ((unsigned)p[i * 4 + 2] << 8) | (unsigned)p[i * 4 + 3];
+        for (i = 16; i < 64; i++) {
+            unsigned s0 = ror32(w[i - 15], 7) ^ ror32(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            unsigned s1 = ror32(w[i - 2], 17) ^ ror32(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        for (i = 0; i < 8; i++) v[i] = s->h[i];
+        for (i = 0; i < 64; i++) {
+            unsigned S1 = ror32(v[4], 6) ^ ror32(v[4], 11) ^ ror32(v[4], 25);
+            unsigned ch = (v[4] & v[5]) ^ (~v[4] & v[6]);
+            unsigned t1 = v[7] + S1 + ch + kSha256K[i] + w[i];
+            unsigned S0 = ror32(v[0], 2) ^ ror32(v[0], 13) ^ ror32(v[0], 22);
+            unsigned mj = (v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]);
+            unsigned t2 = S0 + mj;
+            v[7] = v[6]; v[6] = v[5]; v[5] = v[4]; v[4] = v[3] + t1; v[3] = v[2]; v[2] = v[1]; v[1] = v[0]; v[0] = t1 + t2;
+        }
+        for (i = 0; i < 8; i++) s->h[i] += v[i];
+    }
+}
+
+static void hash_update(hash_t *s, const unsigned char *d, size_t n)
+{
+    size_t i;
+    for (i = 0; i < n; i++) {
+        s->buf[s->fill++] = d[i];
+        if (s->fill == 64) { hash_block(s, s->buf); s->fill = 0; }
+    }
+    s->len += n;
+}
+
+/* wynik jako tekst szesnastkowy; zwraca 1 gdy się udało */
+static int hash_file_hex(const char *path, int algo, char *out, size_t outn)
+{
+    FILE *f = fopen(path, "rb");
+    unsigned char *buf;
+    hash_t s;
+    size_t n, i, words, bytes_out;
+    unsigned long long bits;
+    unsigned char pad[72];
+    int padn;
+    if (!f) return 0;
+    buf = (unsigned char *)malloc(65536);
+    if (!buf) { fclose(f); return 0; }
+    hash_init(&s, algo);
+    while ((n = fread(buf, 1, 65536, f)) > 0) hash_update(&s, buf, n);
+    free(buf);
+    fclose(f);
+    bits = s.len * 8ULL;
+    padn = (int)((s.fill < 56) ? (56 - s.fill) : (120 - s.fill));
+    memset(pad, 0, sizeof pad);
+    pad[0] = 0x80;
+    hash_update(&s, pad, (size_t)padn);
+    for (i = 0; i < 8; i++) pad[i] = (unsigned char)((algo == 1) ? (bits >> (8 * i)) : (bits >> (8 * (7 - i))));
+    hash_update(&s, pad, 8);
+    words = algo == 1 ? 4 : (algo == 2 ? 5 : 8);
+    bytes_out = words * 4;
+    if (outn < bytes_out * 2 + 1) return 0;
+    for (i = 0; i < words; i++) {
+        unsigned v = s.h[i];
+        int b;
+        for (b = 0; b < 4; b++) {
+            unsigned char byte = (unsigned char)((algo == 1) ? (v >> (8 * b)) : (v >> (8 * (3 - b))));
+            snprintf(out + i * 8 + (size_t)b * 2, 3, "%02x", byte);
+        }
+    }
+    out[bytes_out * 2] = 0;
+    return 1;
+}
+
 /* ------------------------------------------------------------------ opis bazy (diagnostyka) */
 
 static void dump_val(rep_t *r, const char *name, const val_t *v)
@@ -1499,7 +1646,50 @@ static void dump_item_sample(rep_t *r, sqlite3 *db, const char *ikey, long long 
     }
 }
 
-static void diagnose_db(sqlite3 *db, rep_t *r)
+/* <Media>/iTunes_Control/iTunes/MediaLibrary.sqlitedb -> <Media> */
+static void media_root_of(const char *db_path, char *out, size_t n)
+{
+    char *s;
+    scopy(out, n, db_path);
+    s = strrchr(out, '/'); if (s) *s = 0;
+    s = strrchr(out, '/'); if (s) *s = 0;
+    s = strrchr(out, '/'); if (s) *s = 0;
+}
+
+/* Pełne wartości pola integrity (podpis wiersza) oryginalnych utworów razem ze skrótami ich plików - do ustalenia, jak ten podpis powstaje. */
+static void dump_integrity(rep_t *r, sqlite3 *db, const char *media_root)
+{
+    sqlite3_stmt *st = NULL;
+    int n = 0;
+    if (!table_exists(db, "item_extra") || !table_exists(db, "item") || !table_exists(db, "base_location")) return;
+    if (sqlite3_prepare_v2(db,
+            "SELECT item_extra.item_pid, hex(item_extra.integrity), item_extra.file_size, item_extra.total_time_ms, item_extra.date_created, "
+            "item_extra.date_modified, item_extra.location, base_location.path FROM item_extra "
+            "LEFT JOIN item ON item.item_pid = item_extra.item_pid LEFT JOIN base_location ON base_location.base_location_id = item.base_location_id "
+            "WHERE item_extra.integrity IS NOT NULL ORDER BY item_extra.item_pid LIMIT 6", -1, &st, NULL) != SQLITE_OK) return;
+    rep(r, "\nPodpisy integrity oryginałów (pid, rozmiar z bazy, czas ms, daty, plik, hex, skróty pliku):\n");
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const char *loc = (const char *)sqlite3_column_text(st, 6);
+        const char *bp = (const char *)sqlite3_column_text(st, 7);
+        char path[1100];
+        struct stat sb;
+        rep(r, " pid=%lld size=%lld ms=%lld dc=%lld dm=%lld loc=%s hex=%s\n", sqlite3_column_int64(st, 0), sqlite3_column_int64(st, 2),
+            sqlite3_column_int64(st, 3), sqlite3_column_int64(st, 4), sqlite3_column_int64(st, 5), loc ? loc : "?",
+            sqlite3_column_text(st, 1) ? (const char *)sqlite3_column_text(st, 1) : "NULL");
+        if (n < 3 && loc && bp && media_root) {
+            snprintf(path, sizeof path, "%s/%s/%s", media_root, bp, loc);
+            if (stat(path, &sb) == 0) {
+                char h1[80], h2[80], h3[80];
+                if (hash_file_hex(path, 1, h1, sizeof h1) && hash_file_hex(path, 2, h2, sizeof h2) && hash_file_hex(path, 3, h3, sizeof h3))
+                    rep(r, "   plik: %lld B, mtime=%lld md5=%s sha1=%s sha256=%s\n", (long long)sb.st_size, (long long)sb.st_mtime, h1, h2, h3);
+            } else rep(r, "   plik %s: brak\n", path);
+            n++;
+        }
+    }
+    sqlite3_finalize(st);
+}
+
+static void diagnose_db(sqlite3 *db, rep_t *r, const char *media_root)
 {
     sqlite3_stmt *st = NULL;
     char names[MAXT][48];
@@ -1549,6 +1739,7 @@ static void diagnose_db(sqlite3 *db, rep_t *r)
         dump_query(r, db, "entity_revision: rodzaje", "SELECT class, revision_type, deleted, count(*) AS n, max(revision) AS max_rev FROM entity_revision GROUP BY class, revision_type, deleted");
         dump_query(r, db, "entity_revision: ostatnie 6", "SELECT * FROM entity_revision ORDER BY revision DESC LIMIT 6");
     }
+    if (media_root) dump_integrity(r, db, media_root);
     /* przykładowe utwory: pierwszy mp3, pierwszy nie-mp3, najnowszy */
     if (table_exists(db, "item") && table_exists(db, "item_extra")) {
         tbl_t it;
@@ -1700,7 +1891,7 @@ int mi_lib_import(const char *db_path, const char *backup_dir, const mi_lib_trac
     if (!c->has_item || !c->ikey[0]) {
         rep(r, "W bazie nie ma tabeli item z kolumną item_pid - to nie wygląda na bibliotekę Muzyki z iOS 6.\n");
         rep(r, "\nOpis bazy (prześlij go autorowi):\n");
-        diagnose_db(db, r);
+        { char mr[900]; media_root_of(db_path, mr, sizeof mr); diagnose_db(db, r, mr); }
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL); sqlite3_close(db); free(c);
         return -1;
     }
@@ -1942,7 +2133,7 @@ int mi_lib_diagnose(const char *db_path, char *out, int cap)
     rep(r, "Music Impactor - diagnostyka biblioteki\nBaza: %s\nSQLite: %s\n", db_path, sqlite3_libversion());
     if (stat(db_path, &sb) == 0) rep(r, "Rozmiar pliku: %ld B\n", (long)sb.st_size);
     if (!open_db(db_path, &db, r)) return 0;
-    diagnose_db(db, r);
+    { char mr[900]; media_root_of(db_path, mr, sizeof mr); diagnose_db(db, r, mr); }
     sqlite3_close(db);
     return 1;
 }

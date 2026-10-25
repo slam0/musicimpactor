@@ -329,6 +329,7 @@ def scenario(name, variant, unix=False, expect_ok=4, tracks=10):
     check("RETURN 1" in out and "item_extra" in out, "diagnose")
     if fulltype:
         check("Przykładowy utwór item_pid=" in out and "base_location" in out and "_MLDatabaseProperties" in out, "diagnose: brak próbek")
+        check("Podpisy integrity" in out and "hex=DEADBEEF" in out, "diagnose: brak sekcji integrity")
     # przywracanie kopii
     out = run(["restore", dbp, bk])
     check("RETURN 1" in out, "restore: " + out[-300:])
@@ -348,6 +349,15 @@ def main():
                            os.path.join(HERE, "..", "mi_core.c"), "-lsqlite3", "-o", os.path.join(HERE, "sort_test")])
     p = subprocess.run([os.path.join(HERE, "sort_test")], capture_output=True, text=True)
     check(p.returncode == 0 and "bad=0" in p.stdout, "sort_test: " + p.stdout)
+    import hashlib
+    for size in (0, 1, 55, 56, 57, 63, 64, 65, 119, 120, 1000, 70000):
+        hp = os.path.join(tempfile.gettempdir(), "mi_hash_%d.bin" % size)
+        data = bytes((i * 7 + 3) & 255 for i in range(size))
+        open(hp, "wb").write(data)
+        q = subprocess.run([os.path.join(HERE, "sort_test"), hp], capture_output=True, text=True)
+        want = "%s %s %s" % (hashlib.md5(data).hexdigest(), hashlib.sha1(data).hexdigest(), hashlib.sha256(data).hexdigest())
+        check(q.stdout.strip() == want, "skróty pliku %d B: %r" % (size, q.stdout.strip()))
+        os.remove(hp)
     scenario("pełny schemat, daty od 2001", "full")
     scenario("daty unix", "full", unix=True)
     scenario("własne porównywanie napisów w indeksie", "collation", expect_ok=4)

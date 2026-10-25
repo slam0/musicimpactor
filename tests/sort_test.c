@@ -1,5 +1,7 @@
 #include "../mi_lib.c"
-int main(void){
+int main(int argc,char **argv){
+  if(argc>1){char a[80],b[80],c[80]; if(!hash_file_hex(argv[1],1,a,80)||!hash_file_hex(argv[1],2,b,80)||!hash_file_hex(argv[1],3,c,80))return 2; printf("%s %s %s\n",a,b,c); return 0;}
+
   const char *names[]={"A1","After","After EP - EP","After EP 2 - EP","Ania D\xc4\x85" "browska","Anna Dabrowska","Anna Wyszkoni","Anna Wyszkoni & Video","Baroque","Close Your Eyes","Cold","Cold - Single","Deep Diving","Deep Diving - Single","Dla Naiwnych Marzycieli","Dove","Dove - Single","Element","Element - Single","Ever","Field","Graham Epstein, Jeff Hazin","Here We Come","In a city called Garden",NULL};
   int secs[]={0,0,0,0,0,0,0,0,2,3,3,3,5,5,5,5,5,6,6,6,8,9,10,11};
   int i,bad=0;

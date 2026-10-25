@@ -1,7 +1,7 @@
 Package: com.nazar0vsky.musicimpactor
 Name: Music Impactor
 Depends: firmware (>= 6.0)
-Version: 1.0.3
+Version: 1.0.4
 Architecture: iphoneos-arm
 Description: Wrzuca pobrane piosenki i albumy (MP3, M4A, WAV) prosto do aplikacji Muzyka - bez komputera
 Maintainer: nazar0vsky-slam0
